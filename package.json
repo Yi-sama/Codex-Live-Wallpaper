@@ -1,0 +1,42 @@
+{
+  "name": "codex-live-wallpaper",
+  "version": "0.3.6",
+  "description": "Local Wallpaper Engine video and Scene backgrounds for the Codex desktop app.",
+  "type": "module",
+  "files": [
+    ".codex-plugin/",
+    ".mcp.json",
+    "scripts/",
+    "packaging/",
+    "skills/",
+    "src/",
+    "LICENSE",
+    "NOTICE.md",
+    "README.md",
+    "README.zh.md",
+    "CHANGELOG.md",
+    "docs/RELEASING.md",
+    "docs/releases/",
+    "docs/assets/"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "verify": "node --check scripts/mcp-server.mjs && node --check src/codex-skin.mjs && node --check src/wallpaper-engine.mjs && node --test test/*.test.mjs",
+    "build:windows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-installer.ps1"
+  },
+  "keywords": ["codex-plugin", "wallpaper-engine", "steam", "windows", "mcp", "dsh"],
+  "author": "JonathandNidhog",
+  "contributors": [{ "name": "Yi-sama", "url": "https://github.com/Yi-sama" }],
+  "homepage": "https://github.com/Yi-sama/Codex-Live-Wallpaper#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Yi-sama/Codex-Live-Wallpaper.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Yi-sama/Codex-Live-Wallpaper/issues"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  }
+}
