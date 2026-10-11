@@ -1,0 +1,12 @@
+node_modules/
+*.log
+work/
+outputs/
+.env
+.DS_Store
+Thumbs.db
+output/
+.local-builds/
+docs/project-notes.md
+docs/progress/
+docs/debug/
