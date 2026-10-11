@@ -23,6 +23,8 @@ OutputBaseFilename=CodexLiveWallpaper-Setup-{#AppVersion}-x64
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=assets\setup-icon.ico
+UninstallDisplayIcon={app}\setup-icon.ico
 LicenseFile={#PayloadDir}\plugins\dsh-plugin-wallpaper-engine-codex\LICENSE
 CloseApplications=no
 RestartApplications=no
@@ -38,8 +40,8 @@ Source: "{#PayloadDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
 Source: "installer-actions.ps1"; Flags: dontcopy
 
 [Icons]
-Name: "{group}\Codex Live Wallpaper"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoLogo -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\start-codex.ps1"""; WorkingDir: "{app}"
-Name: "{userdesktop}\Codex Live Wallpaper"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoLogo -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\start-codex.ps1"""; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{group}\Codex Live Wallpaper"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoLogo -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\start-codex.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\setup-icon.ico"
+Name: "{userdesktop}\Codex Live Wallpaper"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoLogo -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\start-codex.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\setup-icon.ico"; Tasks: desktopicon
 
 [Run]
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoLogo -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\start-codex.ps1"""; Description: "Launch Codex Live Wallpaper"; Flags: nowait postinstall skipifsilent unchecked
@@ -78,6 +80,12 @@ begin
   Args := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + Script +
     '" -Action ' + Action + ' -AppRoot "' + ExpandConstant('{app}') +
     '" -LogFile "' + LogPath + '"';
+  if Action = 'Install' then begin
+    if not WizardNoIcons then
+      Args := Args + ' -StartMenuShortcut "' + ExpandConstant('{group}\Codex Live Wallpaper.lnk') + '"';
+    if WizardIsTaskSelected('desktopicon') then
+      Args := Args + ' -DesktopShortcut "' + ExpandConstant('{userdesktop}\Codex Live Wallpaper.lnk') + '"';
+  end;
   ExitCode := -1;
   Started := False;
   Failure := '';

@@ -5,6 +5,8 @@ param(
   [string]$DataDir,
   [string]$CodexHome,
   [string]$CodexCliPath,
+  [string]$DesktopShortcut,
+  [string]$StartMenuShortcut,
   [string]$LogFile
 )
 
@@ -136,6 +138,21 @@ function Invoke-Codex {
   }
 }
 
+function Set-CodexShortcutIcons {
+  param([string[]]$Paths, [string]$PluginRoot)
+  $existing = @($Paths | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) })
+  if (-not $existing.Count) { return }
+  . (Join-Path $PluginRoot 'scripts\codex-desktop.ps1')
+  $executable = Find-CodexExecutable
+  if (-not $executable) { throw 'The Codex desktop executable was not found for shortcut icons.' }
+  $shell = New-Object -ComObject WScript.Shell
+  foreach ($path in $existing) {
+    $shortcut = $shell.CreateShortcut($path)
+    $shortcut.IconLocation = "$executable,0"
+    $shortcut.Save()
+  }
+}
+
 try {
   $record = if (Test-Path -LiteralPath $recordPath) { Get-Content -LiteralPath $recordPath -Raw -Encoding UTF8 | ConvertFrom-Json } else { $null }
   if (-not $CodexHome) {
@@ -177,6 +194,7 @@ try {
   if (-not (Test-Path -LiteralPath $nodePath) -or -not (Test-Path -LiteralPath (Join-Path $pluginRoot '.codex-plugin\plugin.json'))) {
     throw 'The installed plugin or bundled Node runtime is missing. Run the setup again.'
   }
+  Set-CodexShortcutIcons -Paths @($DesktopShortcut, $StartMenuShortcut) -PluginRoot $pluginRoot
   New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
   Write-JsonFile -Path (Join-Path $pluginRoot '.mcp.json') -Value @{
     mcpServers = @{

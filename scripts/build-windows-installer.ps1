@@ -65,6 +65,7 @@ foreach ($name in @('RELEASING.md', 'releases', 'assets')) {
 foreach ($name in @('installer-actions.ps1', 'start-codex.ps1')) {
   Copy-Item -LiteralPath (Join-Path $root "packaging\windows\$name") -Destination $payload
 }
+Copy-Item -LiteralPath (Join-Path $root 'packaging\windows\assets\setup-icon.ico') -Destination $payload
 $manifestPath = Join-Path $pluginRoot '.codex-plugin\plugin.json'
 $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $manifest.version = "$Version+windows.$([DateTime]::UtcNow.ToString('yyyyMMddHHmmss'))"

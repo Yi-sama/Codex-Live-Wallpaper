@@ -39,6 +39,7 @@ test('Windows setup is per-user and ships only an EXE distribution', () => {
 test('Windows packaging scripts parse in Windows PowerShell', { skip: process.platform !== 'win32' }, () => {
   for (const relative of [
     '../scripts/build-windows-installer.ps1',
+    '../scripts/codex-desktop.ps1',
     '../packaging/windows/installer-actions.ps1',
     '../packaging/windows/start-codex.ps1',
     '../packaging/windows/verify-installer.ps1',
@@ -131,14 +132,79 @@ function installerFunctions() {
 
 function launcherFunctions() {
   const script = fileURLToPath(new URL('../scripts/launch-codex-with-skin.ps1', import.meta.url)).replaceAll("'", "''");
+  const desktop = fileURLToPath(new URL('../scripts/codex-desktop.ps1', import.meta.url)).replaceAll("'", "''");
   return `
     $ErrorActionPreference = 'Stop'
+    . '${desktop}'
     $ast = [Management.Automation.Language.Parser]::ParseFile('${script}', [ref]$null, [ref]$null)
     $ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] }, $false) |
       ForEach-Object { Invoke-Expression $_.Extent.Text }
     $env:CODEX_CLI_PATH = $null
   `;
 }
+
+test('Windows installer uses the supplied multi-size icon and passes only selected shortcut paths', () => {
+  const setup = readFileSync(new URL('../packaging/windows/setup.iss', import.meta.url), 'utf8');
+  const build = readFileSync(new URL('../scripts/build-windows-installer.ps1', import.meta.url), 'utf8');
+  assert.match(setup, /SetupIconFile=assets\\setup-icon\.ico/);
+  assert.match(setup, /UninstallDisplayIcon=\{app\}\\setup-icon\.ico/);
+  assert.match(setup, /if not WizardNoIcons then/);
+  assert.match(setup, /if WizardIsTaskSelected\('desktopicon'\) then/);
+  assert.match(setup, /-StartMenuShortcut/);
+  assert.match(setup, /-DesktopShortcut/);
+  assert.match(build, /packaging\\windows\\assets\\setup-icon\.ico/);
+  const ico = readFileSync(new URL('../packaging/windows/assets/setup-icon.ico', import.meta.url));
+  assert.equal(ico.readUInt16LE(0), 0);
+  assert.equal(ico.readUInt16LE(2), 1);
+  const sizes = [];
+  for (let index = 0; index < ico.readUInt16LE(4); index++) {
+    const offset = 6 + 16 * index;
+    const size = ico[offset] || 256;
+    assert.equal(ico[offset + 1] || 256, size);
+    assert.ok(ico.readUInt32LE(offset + 12) + ico.readUInt32LE(offset + 8) <= ico.length);
+    sizes.push(size);
+  }
+  assert.deepEqual(sizes, [16, 24, 32, 48, 64, 128, 256]);
+});
+
+test('Windows shortcuts use the Codex GUI icon without changing launch arguments or creating unwanted links', {
+  skip: process.platform !== 'win32',
+}, () => {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'skin-shortcut-icons-')));
+  const desktop = join(root, 'desktop.lnk');
+  const menu = join(root, 'menu.lnk');
+  const omitted = join(root, 'not-selected.lnk');
+  const gui = join(root, 'app', 'Codex.exe');
+  const cli = join(root, 'app', 'resources', 'bin', 'codex.exe');
+  mkdirSync(join(root, 'app', 'resources', 'bin'), { recursive: true });
+  writeFileSync(gui, readFileSync(process.execPath));
+  writeFileSync(cli, 'CLI fixture; never executed');
+  const plugin = fileURLToPath(new URL('..', import.meta.url));
+  const quote = value => value.replaceAll("'", "''");
+  powershell(`${installerFunctions()}
+    $env:CODEX_CLI_PATH = '${quote(cli)}'
+    function Get-AppxPackage { [CmdletBinding()] param([string]$Name) return $null }
+    $shell = New-Object -ComObject WScript.Shell
+    $arguments = '-NoProfile -WindowStyle Hidden -File "C:\\fixture\\start-codex.ps1"'
+    foreach ($path in @('${quote(desktop)}', '${quote(menu)}')) {
+      $link = $shell.CreateShortcut($path)
+      $link.TargetPath = Join-Path $PSHOME 'powershell.exe'
+      $link.Arguments = $arguments
+      $link.WorkingDirectory = '${quote(root)}'
+      $link.Save()
+    }
+    Set-CodexShortcutIcons -Paths @('${quote(desktop)}', '${quote(menu)}', '${quote(omitted)}') -PluginRoot '${quote(plugin)}'
+    foreach ($path in @('${quote(desktop)}', '${quote(menu)}')) {
+      $link = $shell.CreateShortcut($path)
+      if ($link.IconLocation -ne '${quote(gui)},0') { throw 'The shortcut did not use the GUI icon.' }
+      if ($link.TargetPath -ne (Join-Path $PSHOME 'powershell.exe') -or $link.Arguments -ne $arguments -or $link.WorkingDirectory -ne '${quote(root)}') {
+        throw 'Applying the icon changed the wallpaper launcher.'
+      }
+    }
+    if (Test-Path -LiteralPath '${quote(omitted)}') { throw 'An unselected shortcut was created.' }
+    Set-CodexShortcutIcons -Paths @() -PluginRoot 'C:\\unused'
+  `);
+});
 
 test('Windows launcher finds the manifest GUI and nested bundled CLI without selecting command helpers or aliases', {
   skip: process.platform !== 'win32',
