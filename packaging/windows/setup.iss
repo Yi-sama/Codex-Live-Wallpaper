@@ -5,13 +5,17 @@
   #error OutputPath is required
 #endif
 #ifndef AppVersion
-  #define AppVersion "0.3.6"
+  #define AppVersion "1.0.0"
+#endif
+#ifndef AppNumericVersion
+  #define AppNumericVersion "1.0.0"
 #endif
 
 [Setup]
 AppId={{B4D2D4A3-30BC-4793-8509-25D83AF3DBDE}
 AppName=Codex Live Wallpaper
 AppVersion={#AppVersion}
+VersionInfoVersion={#AppNumericVersion}
 AppPublisher=Codex Live Wallpaper contributors
 DefaultDirName={localappdata}\Programs\CodexLiveWallpaper
 DefaultGroupName=Codex Live Wallpaper
@@ -24,13 +28,18 @@ Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 SetupIconFile=assets\setup-icon.ico
-UninstallDisplayIcon={app}\setup-icon.ico
 LicenseFile={#PayloadDir}\plugins\dsh-plugin-wallpaper-engine-codex\LICENSE
 CloseApplications=no
 RestartApplications=no
 UninstallDisplayName=Codex Live Wallpaper
+UninstallDisplayIcon={app}\setup-icon.ico
+Uninstallable=yes
+UninstallFilesDir={app}
 SetupLogging=yes
 AllowNoIcons=yes
+
+[CustomMessages]
+CloseCodex=请先保存工作并完全退出 Codex（包括后台进程），然后重试。仅关闭窗口不一定会退出程序，可在任务管理器中确认。安装器不会自动结束任何进程。%n%nPlease save your work and fully exit Codex, including background processes, then retry. Closing its window may leave it running. Setup will not stop any process automatically.
 
 [Tasks]
 Name: desktopicon; Description: "Create a desktop shortcut"; Flags: checkedonce
@@ -41,6 +50,7 @@ Source: "installer-actions.ps1"; Flags: dontcopy
 
 [Icons]
 Name: "{group}\Codex Live Wallpaper"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoLogo -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\start-codex.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\setup-icon.ico"
+Name: "{group}\Uninstall Codex Live Wallpaper"; Filename: "{uninstallexe}"; IconFilename: "{app}\setup-icon.ico"
 Name: "{userdesktop}\Codex Live Wallpaper"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoLogo -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\start-codex.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\setup-icon.ico"; Tasks: desktopicon
 
 [Run]
@@ -80,12 +90,6 @@ begin
   Args := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + Script +
     '" -Action ' + Action + ' -AppRoot "' + ExpandConstant('{app}') +
     '" -LogFile "' + LogPath + '"';
-  if Action = 'Install' then begin
-    if not WizardNoIcons then
-      Args := Args + ' -StartMenuShortcut "' + ExpandConstant('{group}\Codex Live Wallpaper.lnk') + '"';
-    if WizardIsTaskSelected('desktopicon') then
-      Args := Args + ' -DesktopShortcut "' + ExpandConstant('{userdesktop}\Codex Live Wallpaper.lnk') + '"';
-  end;
   ExitCode := -1;
   Started := False;
   Failure := '';
@@ -130,7 +134,11 @@ begin
   ExtractTemporaryFile('installer-actions.ps1');
   if not RunActions(ExpandConstant('{tmp}\installer-actions.ps1'), 'Check', LogPath) then begin
     LoadStringFromFile(LogPath, Detail);
-    Result := 'Codex prerequisite check failed. Read the diagnostic below before changing your installation.' + #13#10 + Utf8Decode(Detail) + #13#10 + 'Diagnostic log: ' + LogPath;
+    if Pos('CODEX_STILL_RUNNING', Utf8Decode(Detail)) > 0 then
+      Result := CustomMessage('CloseCodex')
+    else
+      Result := 'Codex prerequisite check failed. Read the diagnostic below before changing your installation.';
+    Result := Result + #13#10 + #13#10 + Utf8Decode(Detail) + #13#10 + 'Diagnostic log: ' + LogPath;
   end;
 end;
 
@@ -150,13 +158,17 @@ end;
 
 function InitializeUninstall: Boolean;
 var
-  LogPath: String;
+  LogPath, Message: String;
   Detail: AnsiString;
 begin
   LogPath := ActionLogPath('Uninstall');
   Result := RunActions(ExpandConstant('{app}\installer-actions.ps1'), 'Uninstall', LogPath);
   if not Result then begin
     LoadStringFromFile(LogPath, Detail);
-    MsgBox('Could not remove the Codex plugin registration. No wallpaper data was deleted.' + #13#10 + Utf8Decode(Detail) + #13#10 + 'Diagnostic log: ' + LogPath, mbError, MB_OK);
+    if Pos('CODEX_STILL_RUNNING', Utf8Decode(Detail)) > 0 then
+      Message := CustomMessage('CloseCodex')
+    else
+      Message := 'Could not remove the Codex plugin registration. No wallpaper data was deleted.';
+    MsgBox(Message + #13#10 + #13#10 + Utf8Decode(Detail) + #13#10 + 'Diagnostic log: ' + LogPath, mbError, MB_OK);
   end;
 end;

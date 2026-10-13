@@ -78,6 +78,44 @@ test('classifies video and scene preview projects for Codex rendering', () => {
   assert.deepEqual(projects.map((item) => [item.id, item.skinMode]).sort(), [['123456', 'scene'], ['local:aurora', 'video']]);
 });
 
+test('marks author-declared static titles and actual image projects without treating thumbnails as static media', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'we-library-category-'));
+  const staticDir = join(root, 'static-image');
+  const sceneDir = join(root, 'scene-preview');
+  const gifDir = join(root, 'animated-gif');
+  mkdirSync(staticDir); mkdirSync(sceneDir); mkdirSync(gifDir);
+  const png = Buffer.from('89504e470d0a1a0a0000000d4948445200000780000004380802000000', 'hex');
+  writeFileSync(join(staticDir, 'wallpaper.png'), png);
+  writeFileSync(join(staticDir, 'project.json'), JSON.stringify({ title: 'Artwork', type: 'image', file: 'wallpaper.png' }));
+  writeFileSync(join(sceneDir, 'preview.jpg'), 'thumbnail-only');
+  writeFileSync(join(sceneDir, 'project.json'), JSON.stringify({ title: 'Static Scene', type: 'scene', file: 'scene.pkg', preview: 'preview.jpg' }));
+  writeFileSync(join(gifDir, 'wallpaper.gif'), Buffer.from('47494638396102000300', 'hex'));
+  writeFileSync(join(gifDir, 'project.json'), JSON.stringify({ title: 'Animated GIF', type: 'image', file: 'wallpaper.gif' }));
+  const image = readProject(staticDir);
+  const titled = readProject(sceneDir);
+  const gif = readProject(gifDir);
+  assert.equal(image.isStatic, true);
+  assert.equal(image.skinMode, 'preview');
+  assert.equal(image.previewPath, join(staticDir, 'wallpaper.png'));
+  assert.deepEqual([image.sourceWidth, image.sourceHeight], [1920, 1080]);
+  assert.equal(titled.isStatic, true);
+  assert.deepEqual([titled.sourceWidth, titled.sourceHeight], [null, null]);
+  assert.equal(gif.isStatic, false);
+  assert.equal(gif.previewPath, join(gifDir, 'wallpaper.gif'));
+  assert.deepEqual([gif.sourceWidth, gif.sourceHeight], [2, 3]);
+  const runtime = new SceneRuntimeServer();
+  t.after(() => runtime.close());
+  const sources = await runtime.librarySources([
+    image,
+    { ...titled, skinMode: 'preview' },
+    gif,
+    { id: 'thumbnail-only', title: 'Scene', type: 'scene', source: 'local', skinMode: 'preview', projectDir: sceneDir, previewPath: join(sceneDir, 'preview.jpg') },
+  ]);
+  assert.deepEqual(sources.map(source => [source.category, source.sourceWidth, source.sourceHeight]), [
+    ['static', 1920, 1080], ['static', null, null], ['preview', 2, 3], ['preview', null, null],
+  ]);
+});
+
 test('normalizes supported Scene author properties and ignores unsupported types', () => {
   const properties = normalizeUserProperties({
     enabled: { text: '启用特效', type: 'bool', value: true },
@@ -180,6 +218,8 @@ test('library previews use bounded project-local image URLs and never serve arbi
   ]);
   assert.equal(sources[1].thumbnailUrl, null);
   assert.equal(sources[2].skinMode, 'preview');
+  assert.deepEqual(sources[0].category, 'scene');
+  assert.deepEqual([sources[0].sourceWidth, sources[0].sourceHeight], [null, null]);
   assert.doesNotMatch(sources[0].thumbnailUrl, /[A-Z]:\\/);
   const response = await fetch(sources[0].thumbnailUrl);
   assert.equal(response.headers.get('content-type'), 'image/png');
@@ -210,7 +250,11 @@ test('serves registered Scene packages and the WebWallGL renderer over loopback'
     assert.match(rendererSource, /loadSceneFile/);
     assert.match(rendererSource, /export function mountCodexScene/);
     assert.match(rendererSource, /Te\.onFirstFrame = callbacks\.onReady/);
+    assert.match(rendererSource, /Te\.onSceneInfo = callbacks\.onSceneInfo/);
     assert.match(rendererSource, /updateWebProps/);
+    assert.match(rendererSource, /snapshot\(\)/);
+    assert.match(rendererSource, /remainingFrames = 120/);
+    assert.match(rendererSource, /hasVisiblePixels/);
 
     const scenePage = await fetch(urls.scenePageUrl);
     assert.equal(scenePage.status, 200);
@@ -339,6 +383,23 @@ test('builds full-video transfer and video-selection controls', () => {
   assert.match(script, /visibilitychange/);
   assert.match(script, /已暂停（Codex 未激活）/);
   assert.match(script, /action: 'settings'/);
+});
+
+test('MCP apply exposes partial adjustments without instructing callers to reset defaults', () => {
+  const root = mkdtempSync(join(tmpdir(), 'skin-mcp-schema-'));
+  const result = spawnSync(process.execPath, [fileURLToPath(new URL('../scripts/mcp-server.mjs', import.meta.url))], {
+    input: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) + '\n',
+    encoding: 'utf8', windowsHide: true, timeout: 10000,
+    env: { ...process.env, CODEX_SKIN_DATA_DIR: root, CODEX_SKIN_CDP_PORT: '0' },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const reply = JSON.parse(result.stdout.trim());
+  const apply = reply.result.tools.find(tool => tool.name === 'codex_skin_apply');
+  assert.deepEqual(apply.inputSchema.required, ['id']);
+  for (const property of Object.values(apply.inputSchema.properties)) {
+    assert.equal(Object.hasOwn(property, 'default'), false);
+  }
+  assert.match(apply.description, /Omitted settings retain/);
 });
 
 test('allows only the exact Codex main-page CDP target', () => {

@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-wallpaper-engine-codex",
-  "version": "0.3.6",
+  "version": "1.0.0",
   "description": "Local Wallpaper Engine video and Scene backgrounds for the Codex desktop app.",
   "author": {
     "name": "JonathandNidhog",

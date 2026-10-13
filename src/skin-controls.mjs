@@ -6,7 +6,7 @@ export function normalizeRotation(value = {}, sources = null) {
   return {
     enabled: value?.enabled === true && ids.length > 1,
     ids,
-    intervalSeconds: Number.isFinite(value?.intervalSeconds) ? Math.max(5, Math.min(86400, Math.round(value.intervalSeconds))) : 300,
+    intervalSeconds: Number.isFinite(value?.intervalSeconds) ? Math.max(5, Math.min(43200, Math.round(value.intervalSeconds))) : 300,
     transition: value?.transition === 'none' ? 'none' : 'fade',
     durationMs: Number.isFinite(value?.durationMs) ? Math.max(100, Math.min(2000, Math.round(value.durationMs))) : 500,
   };
@@ -115,7 +115,7 @@ export function installSkinFeatures({ cfg, panel, requestSelection, persistSetti
   cleanups.push(leave);
 
   if (panel) {
-    const adjustments = [...panel.children].slice(4);
+    const adjustments = [...panel.children].slice(cfg.sourceOptions.length ? 4 : 3);
     const make = (tag, text, parent) => {
       const element = document.createElement(tag);
       if (text !== undefined) element.textContent = text;
@@ -139,6 +139,11 @@ export function installSkinFeatures({ cfg, panel, requestSelection, persistSetti
       return details;
     };
     const library = section('\u58c1\u7eb8\u5e93');
+    if (cfg.mode === 'picker') {
+      button('\u21bb', '\u5237\u65b0\u58c1\u7eb8', library, () => {
+        window.codexSkinCommand?.(JSON.stringify({ action: 'refresh-sources', controllerId: cfg.controllerId }));
+      });
+    }
     library.open = window.__codexWallpaperLibraryOpen === true;
     library.addEventListener('toggle', () => { window.__codexWallpaperLibraryOpen = library.open; });
     const filters = make('div', undefined, library);
@@ -289,7 +294,7 @@ export function installSkinFeatures({ cfg, panel, requestSelection, persistSetti
     nav.setAttribute('role', 'tablist');
     nav.setAttribute('aria-label', '\u58c1\u7eb8\u63a7\u5236');
     nav.style.cssText = 'display:flex;gap:4px;margin:8px 0 12px';
-    panel.insertBefore(nav, panel.children[4] || library);
+    panel.insertBefore(nav, adjustments[0] || library);
     const groups = { adjustments: [...adjustments, mouse], library: [library], rotation: [rotation] };
     const displays = new Map(Object.values(groups).flat().map(element => [element, element.style.display || '']));
     const tabs = new Map();
@@ -307,6 +312,7 @@ export function installSkinFeatures({ cfg, panel, requestSelection, persistSetti
       const tab = button(label, label, nav, () => showTab(key));
       tab.setAttribute('role', 'tab');
       tab.style.flex = '1';
+      if (cfg.mode === 'picker' && key !== 'library') { tab.disabled = true; tab.style.display = 'none'; }
       tabs.set(key, tab);
     }
     for (const element of [library, rotation]) {
@@ -317,7 +323,7 @@ export function installSkinFeatures({ cfg, panel, requestSelection, persistSetti
       element.style.paddingTop = '0';
     }
     nav.addEventListener('keydown', event => {
-      const keys = [...tabs.keys()];
+      const keys = [...tabs.keys()].filter(key => !tabs.get(key).disabled);
       const current = keys.indexOf(window.__codexWallpaperPanelTab);
       const index = event.key === 'ArrowRight' ? (current + 1) % keys.length
         : event.key === 'ArrowLeft' ? (current + keys.length - 1) % keys.length
@@ -329,5 +335,7 @@ export function installSkinFeatures({ cfg, panel, requestSelection, persistSetti
     });
     showTab(Object.hasOwn(groups, window.__codexWallpaperPanelTab) ? window.__codexWallpaperPanelTab : 'adjustments');
   }
-  return () => { cleanups.reverse().forEach(cleanup => cleanup()); };
+  const cleanup = () => { cleanups.reverse().forEach(dispose => dispose()); };
+  cleanup.schedule = schedule;
+  return cleanup;
 }

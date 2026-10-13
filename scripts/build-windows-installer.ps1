@@ -1,6 +1,6 @@
 param(
-  [ValidatePattern('^\d+\.\d+\.\d+$')]
-  [string]$Version = '0.3.6',
+  [ValidatePattern('^\d+\.\d+\.\d+(-rc\.\d+)?$')]
+  [string]$Version = '1.0.0',
   [string]$OutputDirectory,
   [string]$WorkDirectory,
   [string]$CompilerPath
@@ -85,7 +85,8 @@ Write-JsonFile -Path (Join-Path $payload 'build-info.json') -Value @{
   architecture = 'x64'; builtAt = [DateTime]::UtcNow.ToString('o')
 }
 
-& $CompilerPath "/DPayloadDir=$payload" "/DOutputPath=$OutputDirectory" "/DAppVersion=$Version" (Join-Path $root 'packaging\windows\setup.iss')
+$numericVersion = ($Version -split '-', 2)[0]
+& $CompilerPath "/DPayloadDir=$payload" "/DOutputPath=$OutputDirectory" "/DAppVersion=$Version" "/DAppNumericVersion=$numericVersion" (Join-Path $root 'packaging\windows\setup.iss')
 if ($LASTEXITCODE -ne 0) { throw 'Inno Setup compilation failed.' }
 $exe = Join-Path $OutputDirectory "CodexLiveWallpaper-Setup-$Version-x64.exe"
 if (-not (Test-Path -LiteralPath $exe) -or (Get-Item -LiteralPath $exe).Length -lt 1MB) { throw 'The EXE installer was not produced.' }

@@ -5,8 +5,6 @@ param(
   [string]$DataDir,
   [string]$CodexHome,
   [string]$CodexCliPath,
-  [string]$DesktopShortcut,
-  [string]$StartMenuShortcut,
   [string]$LogFile
 )
 
@@ -21,6 +19,28 @@ function Write-JsonFile {
   param([string]$Path, $Value)
   New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Path) | Out-Null
   [IO.File]::WriteAllText($Path, ($Value | ConvertTo-Json -Depth 20) + "`n", [Text.UTF8Encoding]::new($false))
+}
+
+function Assert-CodexClosed {
+  param([string]$Root)
+  $nodePath = Join-Path ([IO.Path]::GetFullPath($Root)) 'runtime\node.exe'
+  $blocking = @(
+    foreach ($process in (Get-Process -Name Codex, ChatGPT, node -ErrorAction SilentlyContinue)) {
+      $path = $process.Path
+      if (-not $path) { continue }
+      $desktop = $false
+      if ($process.ProcessName -in @('Codex', 'ChatGPT')) {
+        $directory = Split-Path -Parent $path
+        $desktop = (Test-Path -LiteralPath (Join-Path $directory 'resources\codex.exe') -PathType Leaf) -or
+          (Test-Path -LiteralPath (Join-Path $directory 'resources\bin\codex.exe') -PathType Leaf)
+      }
+      if ($desktop -or ($process.ProcessName -eq 'node' -and $path -eq $nodePath)) { $process }
+    }
+  )
+  if ($blocking.Count) {
+    $names = ($blocking | ForEach-Object { "$($_.ProcessName) (PID $($_.Id))" }) -join ', '
+    throw "CODEX_STILL_RUNNING: Codex or the installed wallpaper service is still running.`nSave your work and fully exit Codex, including background processes, then retry. Closing a window may not exit the app. No process was stopped.`nRunning: $names"
+  }
 }
 
 function Find-CodexCli {
@@ -138,22 +158,8 @@ function Invoke-Codex {
   }
 }
 
-function Set-CodexShortcutIcons {
-  param([string[]]$Paths, [string]$PluginRoot)
-  $existing = @($Paths | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) })
-  if (-not $existing.Count) { return }
-  . (Join-Path $PluginRoot 'scripts\codex-desktop.ps1')
-  $executable = Find-CodexExecutable
-  if (-not $executable) { throw 'The Codex desktop executable was not found for shortcut icons.' }
-  $shell = New-Object -ComObject WScript.Shell
-  foreach ($path in $existing) {
-    $shortcut = $shell.CreateShortcut($path)
-    $shortcut.IconLocation = "$executable,0"
-    $shortcut.Save()
-  }
-}
-
 try {
+  if ($Action -in @('Check', 'Uninstall')) { Assert-CodexClosed -Root $AppRoot }
   $record = if (Test-Path -LiteralPath $recordPath) { Get-Content -LiteralPath $recordPath -Raw -Encoding UTF8 | ConvertFrom-Json } else { $null }
   if (-not $CodexHome) {
     $CodexHome = if ($record.codexHome) { $record.codexHome } elseif ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $env:USERPROFILE '.codex' }
@@ -194,7 +200,6 @@ try {
   if (-not (Test-Path -LiteralPath $nodePath) -or -not (Test-Path -LiteralPath (Join-Path $pluginRoot '.codex-plugin\plugin.json'))) {
     throw 'The installed plugin or bundled Node runtime is missing. Run the setup again.'
   }
-  Set-CodexShortcutIcons -Paths @($DesktopShortcut, $StartMenuShortcut) -PluginRoot $pluginRoot
   New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
   Write-JsonFile -Path (Join-Path $pluginRoot '.mcp.json') -Value @{
     mcpServers = @{

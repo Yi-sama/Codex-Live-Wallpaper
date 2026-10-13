@@ -6,14 +6,15 @@
 
 项目修改的是 **Codex 窗口背景**，不是 Windows 桌面壁纸；不需要安装 DSH 或 Cordis。
 
-> **首个正式版：v0.3.6。** 目前仅支持 **Windows 10 / Windows 11 x64**，仅提供未签名的 EXE 安装包，不另外制作 ZIP 便携版。正式发布不代表所有兼容性问题已经解决，使用前请阅读下方注意事项。这是独立社区项目，使用实验性的本机调试桥接。
+> **正式版：v1.0.0。** 支持 Windows 10 / Windows 11 x64，仅提供未签名的 EXE 安装包，不另外制作 ZIP 便携版。项目维护者已在另一台 Windows 10 电脑实测通过。这是独立社区项目，使用实验性的本机调试桥接。
 
-[下载 v0.3.6](https://github.com/Yi-sama/Codex-Live-Wallpaper/releases/tag/v0.3.6) | [发布说明](docs/releases/v0.3.6.md) | [更新记录](CHANGELOG.md) | [反馈问题](https://github.com/Yi-sama/Codex-Live-Wallpaper/issues)
+[下载 v1.0.0](https://github.com/Yi-sama/Codex-Live-Wallpaper/releases/tag/v1.0.0) | [发布说明](docs/releases/v1.0.0.md) | [更新记录](CHANGELOG.md) | [反馈问题](https://github.com/Yi-sama/Codex-Live-Wallpaper/issues)
 
 ## 功能
 
 - **视频与 Scene 动态背景：** 循环播放视频，使用 WebWallGL 渲染兼容的 `scene.pkg` 场景。
-- **壁纸库：** 本地缩略图预览、标题或 ID 搜索，以及视频、Scene、预览图分类筛选。
+- **壁纸侧栏：** 右侧停靠、本地缩略图预览、标题或 ID 搜索，以及静态、视频、Scene、预览图分类筛选。
+- **通用设置：** 独立齿轮页面调整面板材质、浅色/深色/跟随系统主题和字体。
 - **外观调节：** 铺满或完整显示、缩放、位置、面板透明度、背景遮罩和模糊。
 - **作者属性：** 调节 Scene 支持的开关、滑块、颜色、选项和文本，并按壁纸保存。
 - **轮播列表：** 添加、排序、移除壁纸，切换上一张或下一张，设置轮播间隔及淡入淡出或直接切换。
@@ -37,7 +38,7 @@
 
 WebWallGL 不是 Wallpaper Engine 官方运行时。部分场景特效、模型、字体或声音可能与原壁纸不同，也可能无法正确渲染。
 
-大视频默认转为保留完整时长的 MP4，最高 2560x1440、30 FPS、约 10 Mbps。**当前转码脚本会移除音轨。** 音量控件无法恢复缓存视频中不存在的声音。帧动画回退只是一段解码动画，不是完整原视频。
+大视频默认转为保留完整时长的 MP4，最高 2560x1440、30 FPS、约 10 Mbps；源视频有音轨时保留为 AAC，新转换不再复用旧的无声缓存。帧动画回退只是一段解码动画，不是完整原视频。
 
 ## 使用条件
 
@@ -49,49 +50,47 @@ WebWallGL 不是 Wallpaper Engine 官方运行时。部分场景特效、模型�
 
 Node 实现只使用内置模块，无需运行 `npm install`。
 
-## 已知问题与注意事项
-
-- **兼容性仍有限：** 新安装包尚未完成全新 Windows 10/11 设备上的实际播放、长时间运行及重启恢复验收，不保证所有电脑和壁纸均正常。
-- **未签名：** Windows 或安全软件可能提示未知发布者。仅从本仓库下载并核对 SHA-256；不要为了安装关闭安全软件。
-- **部分壁纸无法完整运行：** 不支持的 Scene 可能异常或回退为预览图；未打包 Scene、Web 和 Application 项目目前仅显示预览。
-- **大视频转码后无声：** 当前缓存转码会移除音轨。动态背景和转码也会额外占用 CPU、GPU、内存及磁盘空间。
-- **启动与恢复可能受环境影响：** 应使用配套快捷方式启动，首次安装需要手动选择壁纸；已有设置不会自动改成 3/10/20。部分启动问题仍需继续排查。
-- **更新与迁移：** Codex 更新可能导致桥接失效。安装前保存任务；已有同 ID 的定制插件安装会触发冲突保护，不会自动迁移或覆盖。
-- **调试端口与隐私：** 调试桥接仅供本机使用，不要把端口开放或转发到网络。反馈时先移除日志中的个人路径、令牌和登录信息。
-
-遇到问题可以 [提交 Issue](https://github.com/Yi-sama/Codex-Live-Wallpaper/issues/new)，也可以加入下方 QQ 群联系。建议附上 Windows 版本、Codex 版本、壁纸类型、复现步骤和已脱敏的错误信息。
-
 ## Windows EXE 安装
 
-1. 运行 `CodexLiveWallpaper-Setup-0.3.6-x64.exe`。安装器检查 Codex 插件支持，为当前 Windows 用户安装并注册壁纸插件，不负责安装 Codex 或 Wallpaper Engine，也不会自动关闭或重启 Codex。
-2. 保存正在进行的任务，自行退出 Codex，再通过开始菜单或桌面的 **Codex Live Wallpaper** 快捷方式打开。
-3. 新建对话，让 Codex 列出并应用本地 Wallpaper Engine 项目。之后通过配套快捷方式启动，插件桥接加载时会恢复保存的背景。
+安装、升级或卸载前，请先保存当前工作并完全退出 Codex，包括后台进程。仅关闭窗口不一定会退出程序，必要时可在任务管理器中确认。安装器会在替换文件前检查仍在运行的 Codex 或本安装目录的壁纸后台服务，提示退出后重试，不会自动结束或重启任何进程。
 
-安装包只包含插件，不包含壁纸素材。全新安装尚未选择壁纸时，不会自动出现背景或调整面板；先在新对话中应用一个本地项目。
+1. 运行 `CodexLiveWallpaper-Setup-1.0.0-x64.exe`。安装器检查 Codex 插件支持，为当前 Windows 用户安装并注册壁纸插件，不负责安装 Codex 或 Wallpaper Engine。
+2. 通过开始菜单或桌面的 **Codex Live Wallpaper** 快捷方式打开。
+3. 在壁纸库中选择本地 Wallpaper Engine 项目。之后通过配套快捷方式启动，会恢复保存的背景；也可以继续通过 Codex 工具列出并应用壁纸。
 
-发布附件为 `CodexLiveWallpaper-Setup-0.3.6-x64.exe` 及对应的 `.sha256` 文件。安装前可计算 EXE 的 SHA-256，与校验文件中的值比较：
+安装包只包含插件，不包含壁纸素材。首次通过启动器打开时显示壁纸库，不自动应用壁纸；选择本地项目后才显示调整控件。
+
+发布附件为 `CodexLiveWallpaper-Setup-1.0.0-x64.exe` 及对应的 `.sha256` 文件。安装前可计算 EXE 的 SHA-256，与校验文件中的值比较：
 
 ```powershell
-Get-FileHash .\CodexLiveWallpaper-Setup-0.3.6-x64.exe -Algorithm SHA256
+Get-FileHash .\CodexLiveWallpaper-Setup-1.0.0-x64.exe -Algorithm SHA256
 ```
 
 默认程序目录为 `%LOCALAPPDATA%\Programs\CodexLiveWallpaper`，壁纸设置和缓存放在 `%LOCALAPPDATA%\CodexLiveWallpaper\data`。首次安装支持显式设置的 `CODEX_HOME`、`CODEX_SKIN_DATA_DIR` 环境变量；重复安装保留已经记录的配置和数据目录。安装器使用内置 Node，并自动生成匹配的启动器及 MCP 路径，无需手动修改 JSON。
 
-在 Windows“已安装的应用”中卸载 **Codex Live Wallpaper**。卸载会移除此版本的插件及 marketplace 注册，保留壁纸设置、缓存和 Codex 登录文件。
+双击安装目录内的 `unins000.exe` 即可卸载；开始菜单也有 **Uninstall Codex Live Wallpaper** 入口，Windows“已安装的应用”使用同一卸载器。卸载会移除此版本的程序文件、插件及 marketplace 注册，保留壁纸设置、缓存和 Codex 登录文件。不要直接删除程序目录来代替卸载。
 
 如果相同壁纸插件已经从其他 marketplace 安装，安装器会停止，而不是直接覆盖。已有定制安装应先保留当前启动方式和设置，再安排迁移；本安装包不自动迁移这些旧安装。
 
-安装包尚未签名，Windows 可能显示安全提示。全新系统覆盖、长时间播放和从定制安装升级的验证仍有限。
+安装包尚未签名，Windows 可能显示安全提示。请只从本仓库下载并核对 SHA-256，不要为了安装关闭安全软件。
 
 安装器不会直接运行受保护的 Store CLI，不修改 WindowsApps 权限、不启用开发模式，也不要求管理员模式。Store 应用使用包身份启动，非 Store 应用直接启动。经过校验的私有 CLI 副本与壁纸数据分开保留，避免删除仍被占用的可执行文件。
 
-0.3.6 最多等待 90 秒，直到发现准确的 Codex 主页面；进程退出时立即停止等待。这是启动兼容处理，不代表原故障根因已被确认。源码启动器支持 `-StartupTimeoutSeconds`，范围为 1 至 300 秒。
+启动器最多等待 90 秒，直到发现准确的 Codex 主页面；进程退出时立即停止等待。这是启动兼容处理，不代表原故障根因已被确认。源码启动器支持 `-StartupTimeoutSeconds`，范围为 1 至 300 秒。
 
 安装诊断通常保留在 `%LOCALAPPDATA%\CodexLiveWallpaper\logs`，启动诊断位于壁纸数据目录的 `launcher.log`。`scripts/diagnose-launcher.cmd` 可检查已运行实例的两个本地地址，并在脚本旁生成报告；不会重启 Codex 或读取登录文件。分享日志前请检查其中的个人路径。
 
+## 已测试与兼容性说明
+
+- 项目维护者已在另一台 Windows 10 电脑实测通过，并确认此前反馈的使用流程目前正常。
+- 136 项自动化回归测试全部通过，覆盖侧栏与裁剪映射、预览恢复、设置保存、保留音轨的转码、版本信息、安装进程检查及启动器图标。
+- 1.0.0 验证期间，隔离环境中的 Windows 安装、重复安装与卸载检查通过，包括壁纸设置、缓存及模拟登录文件的保留检查。
+- 实测通过不代表所有 Scene 特效、硬件环境或长时间运行情况都兼容。不支持的 Scene 可能回退到预览图或显示可用于排查的错误提示；Web / Application 项目仍仅显示预览。
+- Codex 更新可能影响实验性桥接；已有定制插件安装不会自动迁移。
+
 ## 源码安装
 
-以下是面向开发者的新安装步骤，需要手动配置路径，尚未在全新 Windows 环境中完成端到端验证。已有定制安装请保留原来的 Codex 配置、marketplace、存储路径及启动方式。
+以下是面向开发者的手动源码安装步骤，需要配置路径。已有定制安装请保留原来的 Codex 配置、marketplace、存储路径及启动方式。
 
 ### 1. 放置源码
 
@@ -185,7 +184,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "D:\CodexLiveWallpaper\p
 - “移除 Codex 壁纸。”
 - “生成一套 Codex 原生暗色配色主题。”
 
-应用壁纸后，“皮肤调整”面板提供**调整**、**壁纸库**和**轮播**页签。以后通过配套启动器打开 Codex，插件桥接启动后会恢复保存的选择与参数。直接使用普通 Codex 图标不会启用壁纸调试桥接。
+应用壁纸后，侧栏提供**外观**、**壁纸库**、**轮播**和壁纸**设置**页签；独立齿轮页面提供通用界面设置。以后通过配套启动器打开 Codex，插件桥接启动后会恢复保存的选择与参数。直接使用普通 Codex 图标不会启用壁纸调试桥接。
 
 如果无法发现项目，可在 MCP 进程环境中设置 `WALLPAPER_ENGINE_HOME` 指向 Wallpaper Engine 目录，或设置 `WALLPAPER_ENGINE_STEAM_ROOT` 指向 Steam 根目录。
 
@@ -202,7 +201,7 @@ codex plugin remove dsh-plugin-wallpaper-engine-codex@codex-live-wallpaper
 ```
 
 该命令移除插件缓存，不删除 Wallpaper Engine 项目或单独存放的皮肤数据目录。
-EXE 安装请通过 Windows“已安装的应用”卸载，以同时清理安装文件及 marketplace 注册。
+EXE 安装请运行程序目录内的 `unins000.exe`，或通过 Windows“已安装的应用”卸载，以同时清理安装文件及 marketplace 注册。
 
 ## 原理与限制
 
@@ -230,12 +229,12 @@ Windows CI 使用 Node.js 24.14.0 执行此命令。回归测试使用隔离夹�
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\scripts\build-windows-installer.ps1"
 ```
 
-构建脚本下载并校验固定版本的 Node.js 24.14.0 和 Inno Setup 7.1.0，以便携模式解压编译器，输出 `outputs/windows/CodexLiveWallpaper-Setup-0.3.6-x64.exe` 及 SHA-256 校验文件。最终用户无需安装编译器、Node 或解压工具。
+构建脚本下载并校验固定版本的 Node.js 24.14.0 和 Inno Setup 7.1.0，以便携模式解压编译器，输出 `outputs/windows/CodexLiveWallpaper-Setup-1.0.0-x64.exe` 及 SHA-256 校验文件。最终用户无需安装编译器、Node 或解压工具。
 
 用隔离配置和数据目录验证安装包：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\packaging\windows\verify-installer.ps1" -InstallerPath ".\outputs\windows\CodexLiveWallpaper-Setup-0.3.6-x64.exe" -WorkRoot ".\work\windows-installer\verification"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\packaging\windows\verify-installer.ps1" -InstallerPath ".\outputs\windows\CodexLiveWallpaper-Setup-1.0.0-x64.exe" -WorkRoot ".\work\windows-installer\verification"
 ```
 
 该检查会真实执行静默安装、重复安装和卸载，但不会启动 Codex。当前 Windows 用户已经注册此 EXE 版本时，检查会拒绝运行。

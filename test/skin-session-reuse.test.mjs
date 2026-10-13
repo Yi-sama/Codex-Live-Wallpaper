@@ -7,7 +7,7 @@ import { createContext, runInContext } from 'node:vm';
 import { createServer } from 'node:http';
 import { CodexSkinBridge, makeInjectionScript } from '../src/codex-skin.mjs';
 
-function renderer() {
+function renderer({ ropeLength = null, ropeLeft = null, storageAvailable = true } = {}) {
   class Element extends EventTarget {
     constructor(tag) {
       super();
@@ -15,7 +15,32 @@ function renderer() {
       this.children = [];
       this.style = { setProperty(name, value) { this[name] = value; }, removeProperty(name) { delete this[name]; } };
       this.attributes = {};
+      this.captureListeners = new Map();
+      this.pointerCaptures = new Set();
     }
+    addEventListener(type, callback, options) {
+      if (options === true || options?.capture) {
+        const listeners = this.captureListeners.get(type) || [];
+        if (!listeners.includes(callback)) listeners.push(callback);
+        this.captureListeners.set(type, listeners);
+      } else super.addEventListener(type, callback, options);
+    }
+    removeEventListener(type, callback, options) {
+      if (options === true || options?.capture) {
+        this.captureListeners.set(type, (this.captureListeners.get(type) || []).filter(value => value !== callback));
+      } else super.removeEventListener(type, callback, options);
+    }
+    dispatchEvent(event) {
+      // The fixture runs capture handlers before target handlers, like a browser.
+      for (const listener of this.captureListeners.get(event.type) || []) {
+        listener.call(this, event);
+        if (event.defaultPrevented) return false;
+      }
+      return super.dispatchEvent(event);
+    }
+    setPointerCapture(id) { this.pointerCaptures.add(id); }
+    hasPointerCapture(id) { return this.pointerCaptures.has(id); }
+    releasePointerCapture(id) { this.pointerCaptures.delete(id); }
     appendChild(child) { child.remove(); child.parentElement = this; this.children.push(child); return child; }
     append(...children) { children.forEach(child => this.appendChild(child)); }
     replaceChildren(...children) { [...this.children].forEach(child => child.remove()); this.append(...children); }
@@ -71,6 +96,15 @@ function renderer() {
     getElementById: id => [...document.body.all(), ...document.head.all()].find(element => element.id === id) || null,
   });
   const window = new EventTarget();
+  window.innerWidth = 1280;
+  window.innerHeight = 816;
+  const storage = new Map();
+  if (ropeLength !== null) storage.set('codex-wallpaper-rope-length', ropeLength);
+  if (ropeLeft !== null) storage.set('codex-wallpaper-rope-left', ropeLeft);
+  Object.defineProperty(window, 'localStorage', { get() {
+    if (!storageAvailable) throw new Error('Storage denied');
+    return { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) };
+  } });
   const commands = [];
   window.codexSkinCommand = value => commands.push(JSON.parse(value));
   const revoked = [];
@@ -92,7 +126,7 @@ function renderer() {
     cancelAnimationFrame() {},
   });
   return {
-    window, document, commands, revoked, timers,
+    window, document, commands, revoked, timers, storage,
     evaluate: source => runInContext(source, context),
     install: settings => runInContext(makeInjectionScript(settings), context),
     video: () => document.getElementById('codex-wallpaper-engine-skin')?.querySelector('video'),
@@ -125,6 +159,364 @@ test('skin appearance defaults match the sliders and preserve explicit settings'
     assert.deepEqual(controls.querySelectorAll('input').slice(3, 6).map(input => Number(input.value)),
       [Math.round(expected.panelOpacity * 100), Math.round(expected.scrimOpacity * 100), expected.blurPx]);
   }
+});
+
+test('first-use picker does not alter app appearance or save a fake wallpaper and permits first selection', async () => {
+  const host = renderer();
+  const result = host.install({ mode: 'picker', currentId: null, instanceId: 'picker', sourceOptions: settings.sourceOptions });
+  assert.equal(result.mode, 'picker');
+  assert.equal(host.document.documentElement.style['--codex-skin-panel-opacity'], undefined);
+  assert.equal(host.document.getElementById('codex-wallpaper-engine-skin-style'), null);
+  assert.equal(host.document.getElementById('codex-wallpaper-engine-skin').style.display, 'none');
+  assert.equal(host.window.__codexWallpaperPanelTab, 'library');
+  const bridge = Object.assign(Object.create(CodexSkinBridge.prototype), { active: { mode: 'picker' } });
+  assert.equal(bridge.savedSettings(), null);
+  const controls = host.document.getElementById('codex-wallpaper-engine-skin-controls');
+  const source = controls.querySelector('select');
+  source.value = 'one';
+  source.dispatchEvent(new Event('change'));
+  assert.equal(host.commands.at(-1).action, 'select-request');
+  assert.equal(host.commands.at(-1).id, 'one');
+  host.install(settings);
+  assert.equal(host.video().tagName, 'VIDEO');
+});
+
+test('Scene diagnostic heartbeat is authenticated, visible in status, and does not resume playback', () => {
+  const host = renderer();
+  const sent = [];
+  const child = { postMessage: value => sent.push(value) };
+  const originalCreate = host.document.createElement;
+  host.document.createElement = tag => {
+    const element = originalCreate(tag);
+    if (tag === 'iframe') element.contentWindow = child;
+    return element;
+  };
+  host.install({ ...settings, mode: 'scene', scenePageUrl: 'http://127.0.0.1:4321/scene/token/index.html' });
+  const dispatch = (source, data) => {
+    const event = new Event('message');
+    Object.assign(event, { origin: 'http://127.0.0.1:4321', source, data });
+    host.window.dispatchEvent(event);
+  };
+  dispatch(child, { type: 'codex-scene-ready' });
+  const count = sent.length;
+  const diagnostics = { fps: 45, phase: 'ready', stalled: false, canvasWidth: 640, canvasHeight: 480 };
+  dispatch({}, { type: 'codex-scene-diagnostics', diagnostics });
+  assert.equal(host.window.__codexWallpaperRuntime.snapshot().sceneDiagnostics, null);
+  dispatch(child, { type: 'codex-scene-diagnostics', diagnostics });
+  assert.equal(host.window.__codexWallpaperRuntime.snapshot().sceneDiagnostics.fps, 45);
+  assert.equal(sent.length, count);
+  assert.match(host.document.getElementById('codex-wallpaper-engine-skin-controls').querySelector('pre').textContent, /"fps": 45/);
+});
+
+test('empty first-use library hides all adjustments and keyboard navigation stays in the library', () => {
+  const host = renderer();
+  host.install({ mode: 'picker', currentId: null, sourceOptions: [] });
+  const controls = host.document.getElementById('codex-wallpaper-engine-skin-controls');
+  const panel = controls.children[1];
+  const inputs = panel.querySelectorAll('input').filter(input => input.type === 'range');
+  assert.ok(inputs.length > 0);
+  assert.ok(inputs.every(input => input.parentElement.style.display === 'none'));
+  const nav = panel.children.find(child => child.attributes.role === 'tablist');
+  for (const key of ['ArrowRight', 'ArrowLeft', 'Home', 'End']) {
+    const event = new Event('keydown');
+    Object.assign(event, { key });
+    nav.children.forEach(child => { child.focus = () => {}; });
+    nav.dispatchEvent(event);
+    assert.equal(host.window.__codexWallpaperPanelTab, 'library');
+  }
+  const refresh = controls.querySelectorAll('button').find(child => child.title === '\u5237\u65b0\u58c1\u7eb8');
+  refresh.dispatchEvent(new Event('click'));
+  assert.equal(host.commands.at(-1).action, 'refresh-sources');
+});
+
+test('hanging rope changes only its length, uses local UI storage and follows the saved setting across selection', () => {
+  const host = renderer();
+  host.install(settings);
+  finishVideo(host);
+  const controls = host.document.getElementById('codex-wallpaper-engine-skin-controls');
+  const handle = controls.children[0];
+  const player = host.video();
+  const snapshot = host.window.__codexWallpaperRuntime.snapshot();
+  const wheel = (deltaY, deltaMode = 0, ctrlKey = false) => {
+    const event = new Event('wheel', { cancelable: true });
+    Object.assign(event, { deltaY, deltaMode, ctrlKey });
+    handle.dispatchEvent(event);
+    return event;
+  };
+  assert.equal(handle.attributes['aria-label'], '\u76ae\u80a4\u8c03\u6574');
+  assert.equal(handle.textContent, '');
+  const image = handle.children[1];
+  assert.equal(image.tagName, 'IMG');
+  assert.match(image.src, /^data:image\/png;base64,/);
+  const png = Buffer.from(image.src.split(',')[1], 'base64');
+  assert.equal(png.readUInt32BE(16), 288);
+  assert.equal(png.readUInt32BE(20), 400);
+  assert.equal(png[25], 6, 'Mascot PNG must include its alpha channel.');
+  assert.equal(image.draggable, false);
+  assert.equal(controls.ropeVersion, 4);
+  assert.equal(controls.style['--codex-rope-size'], '84px');
+  assert.equal(controls.style['--codex-rope-length'], '56px');
+  assert.equal(wheel(100).defaultPrevented, true);
+  assert.equal(controls.style['--codex-rope-length'], '88px');
+  wheel(-2, 1);
+  assert.ok(parseFloat(controls.style['--codex-rope-length']) < 88);
+  const before = controls.style['--codex-rope-length'];
+  assert.equal(wheel(120, 0, true).defaultPrevented, false);
+  assert.equal(controls.style['--codex-rope-length'], before);
+  assert.equal(host.video(), player);
+  assert.deepEqual(host.window.__codexWallpaperRuntime.snapshot(), snapshot);
+  assert.deepEqual(host.commands, [], 'Rope movement must not persist wallpaper adjustments.');
+  const saved = host.storage.get('codex-wallpaper-rope-length');
+  host.install({ ...settings, currentId: 'two', instanceId: 'two' });
+  assert.equal(host.document.getElementById(controls.id).style['--codex-rope-length'], saved + 'px');
+  const reloaded = renderer({ ropeLength: saved });
+  reloaded.install(settings);
+  assert.equal(reloaded.document.getElementById(controls.id).style['--codex-rope-length'], saved + 'px');
+  const retired = controls.style['--codex-rope-length'];
+  wheel(100);
+  assert.equal(controls.style['--codex-rope-length'], retired, 'A retired handle must not retain wheel listeners.');
+});
+
+test('rope supports keyboard and Escape, clamps to the viewport and tolerates unavailable UI storage', () => {
+  const host = renderer({ ropeLength: 'broken', storageAvailable: false });
+  host.install(settings);
+  const controls = host.document.getElementById('codex-wallpaper-engine-skin-controls');
+  const handle = controls.children[0];
+  const panel = controls.children[1];
+  let focused = false;
+  handle.focus = () => { focused = true; };
+  const key = value => {
+    const event = new Event('keydown', { cancelable: true });
+    Object.assign(event, { key: value });
+    handle.dispatchEvent(event);
+    // The minimal DOM fixture has no native parent bubbling.
+    Object.defineProperty(event, 'target', { value: handle });
+    controls.dispatchEvent(event);
+  };
+  assert.equal(controls.style['--codex-rope-length'], '56px');
+  key('ArrowDown');
+  assert.equal(controls.style['--codex-rope-length'], '72px');
+  key('End');
+  assert.equal(controls.style['--codex-rope-length'], '560px');
+  host.window.innerHeight = 220;
+  host.window.dispatchEvent(new Event('resize'));
+  assert.equal(controls.style['--codex-rope-length'], '91px');
+  host.window.innerHeight = 816;
+  host.window.dispatchEvent(new Event('resize'));
+  assert.equal(controls.style['--codex-rope-length'], '560px', 'Resize does not erase the remembered length.');
+  key('Home');
+  assert.equal(controls.style['--codex-rope-length'], '16px');
+  handle.dispatchEvent(new Event('click'));
+  assert.equal(panel.style.display, 'block');
+  assert.equal(handle.attributes['aria-expanded'], 'true');
+  key('Escape');
+  assert.equal(panel.style.display, 'none');
+  assert.equal(handle.attributes['aria-expanded'], 'false');
+  assert.equal(focused, true);
+});
+
+for (const version of [1, 2, 3]) test(`a retained version-${version} rope upgrades to the pullable mascot without restarting media and reuse keeps its handle`, () => {
+  const host = renderer();
+  host.install(settings);
+  finishVideo(host);
+  const player = host.video();
+  const controls = host.document.getElementById('codex-wallpaper-engine-skin-controls');
+  controls.ropeVersion = version;
+  const upgraded = host.install({ ...settings, reuseExisting: true });
+  assert.equal(upgraded.reused, true);
+  assert.equal(host.video(), player);
+  assert.equal(controls.ropeVersion, 4);
+  const cleanup = host.window.__codexWallpaperRopeCleanup;
+  host.install({ ...settings, controllerId: 'peer', reuseExisting: true });
+  assert.equal(host.window.__codexWallpaperRopeCleanup, cleanup);
+  assert.equal(controls.children[0].children.length, 2);
+});
+
+test('mascot dragging captures the pointer, saves both axes and does not turn a drag into a panel click', () => {
+  const host = renderer();
+  host.install(settings);
+  finishVideo(host);
+  const controls = host.document.getElementById('codex-wallpaper-engine-skin-controls');
+  const handle = controls.children[0];
+  const panel = controls.children[1];
+  const player = host.video();
+  const snapshot = host.window.__codexWallpaperRuntime.snapshot();
+  const pointer = (type, x, y, overrides = {}) => {
+    const event = new Event(type, { cancelable: true });
+    Object.assign(event, { pointerId: 1, button: 0, isPrimary: true, clientX: x, clientY: y, ...overrides });
+    handle.dispatchEvent(event);
+    return event;
+  };
+  const click = () => {
+    const event = new Event('click', { cancelable: true });
+    Object.assign(event, { detail: 1 });
+    handle.dispatchEvent(event);
+    return event;
+  };
+  pointer('pointerdown', 80, 100);
+  assert.equal(handle.hasPointerCapture(1), true);
+  pointer('pointermove', 82, 102);
+  assert.equal(controls.style['--codex-rope-length'], '56px', 'Small click jitter is not a drag.');
+  pointer('pointermove', 300, 210, { pointerId: 2 });
+  assert.equal(controls.style['--codex-rope-left'], '24px', 'Another pointer cannot take over a drag.');
+  pointer('pointermove', 300, 210);
+  assert.equal(controls.style['--codex-rope-left'], '244px');
+  assert.equal(controls.style['--codex-rope-length'], '166px');
+  pointer('pointerup', 300, 210);
+  assert.equal(handle.hasPointerCapture(1), false);
+  assert.equal(click().defaultPrevented, true);
+  assert.equal(panel.style.display, 'none');
+  assert.equal(host.video(), player);
+  assert.deepEqual(host.window.__codexWallpaperRuntime.snapshot(), snapshot);
+  assert.deepEqual(host.commands, []);
+  assert.equal(host.storage.get('codex-wallpaper-rope-left'), '244');
+  assert.equal(host.storage.get('codex-wallpaper-rope-length'), '166');
+  const reloaded = renderer({ ropeLength: '166', ropeLeft: '244' });
+  reloaded.install(settings);
+  assert.equal(reloaded.document.getElementById(controls.id).style['--codex-rope-left'], '244px');
+  host.window.innerWidth = 320;
+  host.window.dispatchEvent(new Event('resize'));
+  assert.equal(controls.style['--codex-rope-left'], '238px');
+  assert.equal(controls.style['--codex-rope-size'], '70px');
+  host.window.innerWidth = 1280;
+  host.window.dispatchEvent(new Event('resize'));
+  assert.equal(controls.style['--codex-rope-left'], '244px', 'Resize retains the wider-window position.');
+  pointer('pointerdown', 300, 210);
+  pointer('pointerup', 300, 210);
+  assert.equal(click().defaultPrevented, false);
+  assert.equal(panel.style.display, 'block');
+});
+
+test('holding the rope pulls only vertically, pauses idle sway and retains the new length without opening the panel', () => {
+  const host = renderer();
+  host.install(settings);
+  finishVideo(host);
+  const controls = host.document.getElementById('codex-wallpaper-engine-skin-controls');
+  const handle = controls.children[0];
+  const strand = handle.children[0];
+  const player = host.video();
+  const snapshot = host.window.__codexWallpaperRuntime.snapshot();
+  const pointer = (type, x, y) => {
+    const event = new Event(type, { cancelable: true });
+    Object.assign(event, { pointerId: 1, button: 0, isPrimary: true, clientX: x, clientY: y });
+    Object.defineProperty(event, 'target', { value: strand });
+    handle.dispatchEvent(event);
+    return event;
+  };
+  assert.equal(pointer('pointerdown', 56, 24).defaultPrevented, true);
+  const [timer, held] = [...host.timers.entries()].at(-1);
+  pointer('pointermove', 100, 84);
+  assert.equal(controls.style['--codex-rope-length'], '56px', 'Pull waits for the long press.');
+  held();
+  assert.equal(controls.style['--codex-rope-length'], '116px', 'Held pull uses the current pointer position.');
+  assert.equal(controls.style['--codex-rope-left'], '24px', 'Pulling the rope does not move it sideways.');
+  assert.equal(handle.attributes['data-rope-dragging'], '');
+  pointer('pointermove', 160, 120);
+  assert.equal(controls.style['--codex-rope-length'], '152px');
+  pointer('pointerup', 160, 120);
+  assert.equal(host.timers.has(timer), false);
+  assert.equal(handle.attributes['data-rope-dragging'], undefined);
+  assert.equal(handle.hasPointerCapture(1), false);
+  const click = new Event('click', { cancelable: true });
+  Object.assign(click, { detail: 1 });
+  assert.equal(handle.dispatchEvent(click), false);
+  assert.equal(controls.children[1].style.display, 'none');
+  assert.equal(host.storage.get('codex-wallpaper-rope-length'), '152');
+  assert.equal(host.video(), player);
+  assert.deepEqual(host.window.__codexWallpaperRuntime.snapshot(), snapshot);
+  assert.deepEqual(host.commands, []);
+});
+
+test('rope taps and cancelled or retired holds leave no delayed pull and keep ordinary mascot clicks working', () => {
+  for (const end of ['pointerup', 'pointercancel', 'lostpointercapture', 'retire']) {
+    const host = renderer();
+    host.install(settings);
+    const controls = host.document.getElementById('codex-wallpaper-engine-skin-controls');
+    const handle = controls.children[0];
+    const down = new Event('pointerdown', { cancelable: true });
+    Object.assign(down, { pointerId: 1, button: 0, isPrimary: true, clientX: 56, clientY: 24 });
+    Object.defineProperty(down, 'target', { value: handle.children[0] });
+    handle.dispatchEvent(down);
+    const [timer, held] = [...host.timers.entries()].at(-1);
+    if (end === 'retire') {
+      host.install({ ...settings, currentId: 'two', instanceId: 'two' });
+    } else {
+      const up = new Event(end);
+      Object.assign(up, { pointerId: 1 });
+      handle.dispatchEvent(up);
+    }
+    assert.equal(host.timers.has(timer), false, end);
+    held();
+    assert.equal(controls.style['--codex-rope-length'], '56px', end);
+    assert.equal(handle.attributes['data-rope-dragging'], undefined, end);
+    assert.equal(handle.hasPointerCapture(1), false, end);
+    if (end === 'pointerup') {
+      const tap = new Event('click', { cancelable: true });
+      Object.assign(tap, { detail: 1 });
+      assert.equal(handle.dispatchEvent(tap), false);
+      assert.equal(controls.children[1].style.display, 'none');
+      handle.dispatchEvent(new Event('click'));
+      assert.equal(controls.children[1].style.display, 'block');
+    }
+  }
+});
+
+test('drag bounds and cancellation leave normal clicks and wheel input working', () => {
+  const host = renderer({ storageAvailable: false });
+  host.install(settings);
+  const controls = host.document.getElementById('codex-wallpaper-engine-skin-controls');
+  const handle = controls.children[0];
+  const pointer = (type, x, y, overrides = {}) => {
+    const event = new Event(type, { cancelable: true });
+    Object.assign(event, { pointerId: 1, button: 0, isPrimary: true, clientX: x, clientY: y, ...overrides });
+    handle.dispatchEvent(event);
+  };
+  pointer('pointerdown', 80, 100, { button: 2 });
+  assert.equal(handle.hasPointerCapture(1), false);
+  pointer('pointerdown', 80, 100);
+  pointer('pointermove', 10000, 10000);
+  assert.equal(controls.style['--codex-rope-left'], '1184px');
+  assert.equal(controls.style['--codex-rope-length'], '560px');
+  pointer('pointermove', -10000, -10000);
+  assert.equal(controls.style['--codex-rope-left'], '12px');
+  assert.equal(controls.style['--codex-rope-length'], '16px');
+  pointer('pointercancel', -10000, -10000);
+  assert.equal(handle.hasPointerCapture(1), false);
+  assert.equal(handle.attributes['data-rope-dragging'], undefined);
+  pointer('pointermove', 300, 300);
+  assert.equal(controls.style['--codex-rope-left'], '12px');
+  handle.dispatchEvent(new Event('click', { cancelable: true }));
+  assert.equal(controls.children[1].style.display, 'block');
+  const wheel = new Event('wheel', { cancelable: true });
+  Object.assign(wheel, { deltaY: 120, deltaMode: 0 });
+  handle.dispatchEvent(wheel);
+  assert.equal(controls.style['--codex-rope-length'], '48px');
+});
+
+test('explicit skin removal releases rope events and removes the entry without clearing its UI preference', async () => {
+  const host = renderer();
+  host.install(settings);
+  const controls = host.document.getElementById('codex-wallpaper-engine-skin-controls');
+  const handle = controls.children[0];
+  const down = new Event('pointerdown');
+  Object.assign(down, { pointerId: 1, button: 0, isPrimary: true, clientX: 60, clientY: 80 });
+  handle.dispatchEvent(down);
+  assert.equal(handle.hasPointerCapture(1), true);
+  const file = join(mkdtempSync(join(tmpdir(), 'skin-rope-remove-')), 'state.json');
+  const client = { async call(_method, params) { return { result: { value: host.evaluate(params.expression) } }; }, close() {} };
+  const bridge = Object.assign(Object.create(CodexSkinBridge.prototype), {
+    stateFile: file, clients: new Map([['fixture', client]]), streamGeneration: 0,
+    async ensureClients() {}, sceneRuntime: { async close() {} },
+  });
+  await bridge.remove();
+  assert.equal(host.document.getElementById(controls.id), null);
+  assert.equal(host.window.__codexWallpaperRopeCleanup, null);
+  assert.equal(handle.hasPointerCapture(1), false);
+  const event = new Event('wheel', { cancelable: true });
+  Object.assign(event, { deltaY: 100, deltaMode: 0 });
+  handle.dispatchEvent(event);
+  assert.equal(event.defaultPrevented, false);
+  assert.equal(host.window.__codexWallpaperRopeLength, 56);
 });
 
 test('skin appearance defaults apply without replacing saved settings on restore', async t => {
@@ -208,17 +600,18 @@ test('restoration refreshes library preview URLs without replacing healthy playb
   video.currentTime = 37;
   const blob = host.window.__codexWallpaperBlobUrl;
   const controls = host.document.getElementById('codex-wallpaper-engine-skin-controls');
+  const panel = controls.children[1];
   const search = controls.querySelectorAll('input').find(input => input.type === 'search');
   search.value = 'Two';
   search.dispatchEvent(new Event('input'));
-  const before = controls.querySelector('img');
+  const before = panel.querySelector('img');
   const grid = before.parentElement.parentElement.parentElement;
   grid.scrollTop = 24;
   const result = host.install({ ...settings, sourceOptions: sources(10002), controllerId: 'second', reuseExisting: true });
   assert.equal(result.reused, true);
   assert.deepEqual(JSON.parse(JSON.stringify(host.window.__codexWallpaperRuntime.config.sourceOptions)), sources(10002));
-  assert.equal(controls.querySelectorAll('img').length, 1);
-  const refreshed = controls.querySelector('img');
+  assert.equal(panel.querySelectorAll('img').length, 1);
+  const refreshed = panel.querySelector('img');
   assert.equal(refreshed.src, sources(10002)[1].thumbnailUrl);
   assert.equal(search.value, 'Two');
   assert.equal(grid.scrollTop, 24);
@@ -228,7 +621,63 @@ test('restoration refreshes library preview URLs without replacing healthy playb
   assert.equal(host.document.getElementById('codex-wallpaper-engine-skin-controls'), controls);
   assert.equal(host.commands.length, 0, 'Thumbnail refresh must not select a wallpaper or persist settings.');
   host.install({ ...settings, sourceOptions: sources(10002), reuseExisting: true });
-  assert.equal(controls.querySelector('img'), refreshed, 'Unchanged URLs must not rebuild the library.');
+  assert.equal(panel.querySelector('img'), refreshed, 'Unchanged URLs must not rebuild the library.');
+});
+
+test('a pinned sidebar keeps its live library URLs when a short-lived chat bridge restores', () => {
+  const host = renderer();
+  const liveSources = settings.sourceOptions.map(item => ({ ...item, thumbnailUrl: 'http://127.0.0.1:10001/' + item.id }));
+  host.install({ ...settings, sourceOptions: liveSources });
+  finishVideo(host);
+  const runtime = host.window.__codexWallpaperRuntime;
+  host.window.__codexWallpaperSidebarSession = { controllerId: 'first', runtime };
+  const result = host.install({ ...settings, controllerId: 'temporary', reuseExisting: true,
+    sourceOptions: settings.sourceOptions.map(item => ({ ...item, thumbnailUrl: 'http://127.0.0.1:10002/' + item.id })) });
+  assert.equal(result.reused, true);
+  assert.equal(runtime.config.controllerId, 'first');
+  assert.deepEqual(JSON.parse(JSON.stringify(runtime.config.sourceOptions)), liveSources);
+  assert.equal(host.window.__codexWallpaperRuntime, runtime);
+});
+
+test('library refresh coalesces requests and updates only the owning renderer without reinjection', async () => {
+  const host = renderer();
+  host.install(settings);
+  finishVideo(host);
+  host.window.top = host.window;
+  const runtime = host.window.__codexWallpaperRuntime;
+  const video = runtime.getMedia();
+  video.currentTime = 19;
+  let refreshed = 0;
+  runtime.sidebar = { refreshLibrary(error) { assert.equal(error, null); refreshed++; } };
+  const sources = settings.sourceOptions.map(item => ({ ...item, thumbnailUrl: 'http://127.0.0.1:10003/' + item.id }));
+  let complete;
+  let scans = 0;
+  const bridge = Object.assign(Object.create(CodexSkinBridge.prototype), {
+    controllerId: 'first', active: { ...settings },
+    sceneRuntime: { librarySources() { scans++; return new Promise(resolve => { complete = resolve; }); } },
+    clients: new Map([['main', { async call(method, params) {
+      assert.equal(method, 'Runtime.evaluate');
+      return { result: { value: host.evaluate(params.expression) } };
+    } }]]),
+    injectCurrent() { throw new Error('Library refresh must not reinject media.'); },
+    persistActive() { throw new Error('Library refresh must not write user settings.'); },
+  });
+  const first = bridge.refreshSources();
+  const second = bridge.refreshSources();
+  complete(sources);
+  await Promise.all([first, second]);
+  assert.equal(scans, 1);
+  assert.equal(refreshed, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(runtime.config.sourceOptions)), sources);
+  assert.equal(host.window.__codexWallpaperRuntime, runtime);
+  assert.equal(runtime.getMedia(), video);
+  assert.equal(video.currentTime, 19);
+  runtime.config.controllerId = 'other';
+  const ignored = bridge.refreshSources();
+  complete([]);
+  await ignored;
+  assert.equal(refreshed, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(runtime.config.sourceOptions)), sources);
 });
 
 test('a blocked Scene frame reports the real policy error and stops loading', () => {
@@ -296,19 +745,48 @@ test('Scene playback messaging waits until its remote frame reports readiness', 
   assert.equal(commands[0][1], 'http://127.0.0.1:4321');
 });
 
-test('audio controls change video sound immediately and survive controller handoff and selection', () => {
+test('status reads actual Scene loading and fallback errors without reinjecting wallpaper', async () => {
   const host = renderer();
-  host.install({ ...settings, muted: true, volume: 0.3 });
+  host.install({ ...settings, mode: 'scene', scenePageUrl: 'http://127.0.0.1:4321/scene/token/index.html' });
+  const bridge = Object.assign(Object.create(CodexSkinBridge.prototype), {
+    active: { ...settings, mode: 'scene' }, saved: null,
+    clients: new Map([['fixture', { async call(method, params) {
+      assert.equal(method, 'Runtime.evaluate');
+      return { result: { value: host.evaluate(params.expression) } };
+    } }]]),
+    async debugStatus() { return { available: true }; },
+  });
+  const loading = await bridge.status();
+  assert.equal(loading.renderers[0].sceneLoading, true);
+  const event = new Event('securitypolicyviolation');
+  Object.assign(event, { blockedURI: 'http://127.0.0.1:4321', effectiveDirective: 'frame-src', disposition: 'enforce' });
+  host.document.dispatchEvent(event);
+  const preview = host.document.getElementById('codex-wallpaper-engine-skin').querySelector('img');
+  const failed = await bridge.status();
+  assert.equal(failed.active.mode, 'scene', 'Requested mode is not proof that Scene rendered.');
+  assert.equal(failed.renderers[0].mode, 'preview');
+  assert.equal(failed.renderers[0].sceneLoading, false);
+  assert.equal(failed.renderers[0].failed, true);
+  assert.match(failed.renderers[0].sceneError, /Codex/);
+  assert.equal(host.document.getElementById('codex-wallpaper-engine-skin').querySelector('img'), preview);
+  assert.deepEqual(host.commands, []);
+});
+
+test('mute checkbox changes only audio and survives controller handoff and selection', () => {
+  const host = renderer();
+  const appearance = { panelOpacity: 0.14, scrimOpacity: 0, blurPx: 0 };
+  host.install({ ...settings, ...appearance, muted: true, volume: 0.3 });
   finishVideo(host);
   const video = host.video();
   const controls = host.document.getElementById('codex-wallpaper-engine-skin-controls');
   const sound = controls.querySelectorAll('input').find(input => input.type === 'checkbox');
   const volume = controls.querySelectorAll('input').filter(input => input.type === 'range').at(-1);
-  assert.equal(sound.checked, false);
+  assert.equal(sound.attributes['aria-label'], '壁纸静音');
+  assert.equal(sound.checked, true);
   assert.equal(volume.value, 30);
   assert.equal(video.muted, true);
   assert.equal(video.volume, 0.3);
-  sound.checked = true;
+  sound.checked = false;
   sound.dispatchEvent(new Event('change'));
   assert.equal(video.muted, false);
   assert.equal(host.commands.at(-1).settings.muted, false);
@@ -316,10 +794,13 @@ test('audio controls change video sound immediately and survive controller hando
   volume.dispatchEvent(new Event('input'));
   assert.equal(video.volume, 0.45);
   assert.equal(host.commands.at(-1).settings.volume, 0.45);
-  sound.checked = false;
+  sound.checked = true;
   sound.dispatchEvent(new Event('change'));
   assert.equal(video.muted, true);
   assert.equal(video.volume, 0.45);
+  for (const [key, value] of Object.entries(appearance)) {
+    assert.equal(host.window.__codexWallpaperRuntime.snapshot().settings[key], value);
+  }
   const result = host.install({ ...settings, controllerId: 'second', muted: false, volume: 1, reuseExisting: true });
   assert.equal(result.reused, true);
   assert.equal(host.video(), video);
@@ -335,6 +816,39 @@ test('audio controls change video sound immediately and survive controller hando
   restarted.install({ ...settings, ...result.settings });
   assert.equal(restarted.video().muted, true);
   assert.equal(restarted.video().volume, 0.45);
+});
+
+test('partial apply keeps saved appearance and audio values, including edits from another chat', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'skin-partial-apply-'));
+  const project = join(root, 'projects', 'myprojects', 'partial-apply-test');
+  mkdirSync(project, { recursive: true });
+  writeFileSync(join(root, 'wallpaper64.exe'), 'fixture');
+  writeFileSync(join(project, 'project.json'), JSON.stringify({ title: 'Partial apply', type: 'video', file: 'video.webm' }));
+  writeFileSync(join(project, 'video.webm'), 'abc');
+  const previousHome = process.env.WALLPAPER_ENGINE_HOME;
+  process.env.WALLPAPER_ENGINE_HOME = root;
+  t.after(() => {
+    if (previousHome === undefined) delete process.env.WALLPAPER_ENGINE_HOME;
+    else process.env.WALLPAPER_ENGINE_HOME = previousHome;
+  });
+  for (const stale of [false, true]) {
+    const bridge = Object.assign(Object.create(CodexSkinBridge.prototype), {
+      stateFile: join(root, `state-${stale}.json`), controllerId: 'partial-apply',
+      saved: null, active: null, streamGeneration: 0, watchdog: true,
+      sceneRuntime: { async librarySources() { return []; } },
+      async injectCurrent() { return [{ installed: true }]; },
+    });
+    const initial = await bridge.apply({
+      id: 'local:partial-apply-test', panelOpacity: 0.14, scrimOpacity: 0, blurPx: 0,
+      muted: false, volume: 0.45, fitMode: 'contain', zoom: 125, positionX: 25, positionY: 75,
+    });
+    if (stale) Object.assign(bridge.active, { panelOpacity: 0.82, scrimOpacity: 0.22, blurPx: 16, volume: 0.3 });
+    const result = await bridge.apply({ id: 'local:partial-apply-test', muted: true, volume: undefined });
+    assert.deepEqual(result.settings, { ...initial.settings, muted: true },
+      stale ? 'Latest shared saved values must beat stale chat settings.' : 'Omitted fields must not reset.');
+    const unmuted = await bridge.apply({ id: 'local:partial-apply-test', muted: false, volume: 0 });
+    assert.deepEqual(unmuted.settings, { ...initial.settings, muted: false, volume: 0 });
+  }
 });
 
 test('audio upgrade replaces an older runtime once, then preserves its player on future restores', () => {

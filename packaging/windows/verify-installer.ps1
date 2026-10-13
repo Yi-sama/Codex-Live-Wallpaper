@@ -2,7 +2,8 @@ param(
   [Parameter(Mandatory)]
   [string]$InstallerPath,
   [Parameter(Mandatory)]
-  [string]$WorkRoot
+  [string]$WorkRoot,
+  [switch]$VerifyIcons
 )
 
 $ErrorActionPreference = 'Stop'
@@ -20,19 +21,30 @@ $oldHome = $env:CODEX_HOME
 $oldData = $env:CODEX_SKIN_DATA_DIR
 $oldPath = $env:PATH
 $oldLocalAppData = $env:LOCALAPPDATA
+$oldCliPath = $env:CODEX_CLI_PATH
 $cliHandle = $null
-$cli = (Get-Command codex.exe -ErrorAction Stop).Source
+$cli = if ($oldCliPath) { $oldCliPath } else { (Get-Command codex.exe -ErrorAction Stop).Source }
+if (-not (Test-Path -LiteralPath $cli -PathType Leaf)) { throw 'The test Codex CLI does not exist.' }
+$env:CODEX_CLI_PATH = $cli
 $checks = [ordered]@{ testRoot = $testRoot }
 $desktop = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Codex Live Wallpaper.lnk'
 $hadDesktopShortcut = Test-Path -LiteralPath $desktop
+$testGroupName = 'Codex Live Wallpaper Verify ' + [IO.Path]::GetFileName($testRoot)
+$testGroup = Join-Path ([Environment]::GetFolderPath('Programs')) $testGroupName
+if ($VerifyIcons -and ($hadDesktopShortcut -or (Test-Path -LiteralPath $testGroup))) {
+  throw 'Icon verification refuses to replace existing shortcuts.'
+}
 
 function Run-Setup {
   param([string]$LogName)
-  $process = Start-Process -FilePath $InstallerPath -WindowStyle Hidden -Wait -PassThru -ArgumentList @(
-    '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/NOICONS', '/TASKS=',
+  $arguments = @(
+    '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART',
     "/DIAGNOSTICSDIR=`"$(Join-Path $testRoot 'diagnostics')`"",
     "/DIR=`"$appRoot`"", "/LOG=`"$(Join-Path $testRoot $LogName)`""
   )
+  if ($VerifyIcons) { $arguments += @('/TASKS=desktopicon', "/GROUP=`"$testGroupName`"") }
+  else { $arguments += @('/NOICONS', '/TASKS=') }
+  $process = Start-Process -FilePath $InstallerPath -WindowStyle Hidden -Wait -PassThru -ArgumentList $arguments
   if ($process.ExitCode -ne 0) { throw "Installer failed with exit code $($process.ExitCode). Read $LogName under $testRoot." }
 }
 
@@ -48,6 +60,49 @@ try {
   $record = Get-Content -LiteralPath $recordFile -Raw -Encoding UTF8 | ConvertFrom-Json
   if (-not $record.registered -or $record.codexHome -ne $profile -or $record.dataDir -ne $data) { throw 'Installation metadata did not use the isolated profile and data paths.' }
   $checks.install = 'pass'
+  $uninstaller = Join-Path $appRoot 'unins000.exe'
+  if (-not (Test-Path -LiteralPath $uninstaller -PathType Leaf) -or (Get-Item -LiteralPath $uninstaller).Length -lt 100KB) {
+    throw 'The installation directory does not contain the standalone uninstaller EXE.'
+  }
+  $checks.uninstallerExe = $uninstaller
+  $build = Get-Content -LiteralPath (Join-Path $appRoot 'build-info.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+  $installedPackage = Get-Content -LiteralPath (Join-Path $record.pluginRoot 'package.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+  $installedManifest = Get-Content -LiteralPath (Join-Path $record.pluginRoot '.codex-plugin\plugin.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+  $registration = Get-ItemProperty -LiteralPath $registrationKey
+  if ($build.version -ne $installedPackage.version -or $build.pluginVersion -ne $installedManifest.version -or $registration.DisplayVersion -ne $build.version) {
+    throw 'Installer, package, plugin and Windows registration versions disagree.'
+  }
+  $checks.version = $build.version
+  $iconPath = Join-Path $appRoot 'setup-icon.ico'
+  $sourceIcon = Join-Path $PSScriptRoot 'assets\setup-icon.ico'
+  if ((Get-FileHash -LiteralPath $iconPath).Hash -ne (Get-FileHash -LiteralPath $sourceIcon).Hash) {
+    throw 'The installed icon does not match the source asset.'
+  }
+  if ($registration.DisplayIcon -ne $iconPath) { throw 'Windows uninstall display does not use the shipped icon.' }
+  Add-Type -AssemblyName System.Drawing
+  $exeIcon = [Drawing.Icon]::ExtractAssociatedIcon($InstallerPath)
+  if (-not $exeIcon) { throw 'The installer has no extractable icon.' }
+  $bitmap = $exeIcon.ToBitmap()
+  try {
+    $bitmap.Save((Join-Path $testRoot 'installer-icon.png'), [Drawing.Imaging.ImageFormat]::Png)
+  } finally { $bitmap.Dispose(); $exeIcon.Dispose() }
+  $checks.installerIcon = 'extracted'
+  $checks.installedIconHash = (Get-FileHash -LiteralPath $iconPath).Hash
+  if ($VerifyIcons) {
+    $shell = New-Object -ComObject WScript.Shell
+    foreach ($path in @($desktop, (Join-Path $testGroup 'Codex Live Wallpaper.lnk'), (Join-Path $testGroup 'Uninstall Codex Live Wallpaper.lnk'))) {
+      if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "The installer did not create the expected shortcut: $path" }
+      $shortcut = $shell.CreateShortcut($path)
+      $expectedIcon = $iconPath + ',0'
+      if ($shortcut.IconLocation -ne $expectedIcon) { throw "Shortcut icon differs from the shipped icon: $path" }
+      if ($path.EndsWith('Uninstall Codex Live Wallpaper.lnk')) {
+        if ($shortcut.TargetPath -ne $uninstaller) { throw 'Uninstall shortcut does not target the local uninstaller.' }
+      } elseif (-not $shortcut.Arguments.Contains((Join-Path $appRoot 'start-codex.ps1'))) {
+        throw 'Launcher shortcut does not target the isolated installation.'
+      }
+    }
+    $checks.shortcuts = 'desktop, Start menu launcher and uninstaller passed'
+  }
   $nodeVersion = & $record.nodePath --version
   if ($LASTEXITCODE -ne 0 -or $nodeVersion -ne 'v24.14.0') { throw 'Bundled Node did not execute.' }
   $checks.bundledNode = $nodeVersion
@@ -81,16 +136,21 @@ try {
       if (-not $line.Wait(10000)) { throw "MCP request timed out: $($request.method)" }
       $reply = $line.Result | ConvertFrom-Json
       if ($reply.id -ne $request.id -or $reply.error -or -not $reply.result) { throw "MCP returned an invalid response: $($request.method)" }
+      if ($request.method -eq 'initialize' -and $reply.result.serverInfo.version -ne $build.version) {
+        throw 'Installed MCP version does not match the installer.'
+      }
     }
     foreach ($name in @('codex_skin_status', 'codex_skin_list_sources', 'codex_skin_apply', 'codex_skin_remove')) {
       if ($name -notin $reply.result.tools.name) { throw "Installed MCP tool is missing: $name" }
     }
     $apply = $reply.result.tools | Where-Object { $_.name -eq 'codex_skin_apply' }
-    $defaults = $apply.inputSchema.properties
-    if ($defaults.panelOpacity.default -ne 0.2 -or $defaults.scrimOpacity.default -ne 0.1 -or $defaults.blurPx.default -ne 3) {
-      throw 'Installed MCP appearance defaults do not match the release.'
+    foreach ($name in @('panelOpacity', 'scrimOpacity', 'blurPx', 'muted', 'volume')) {
+      $property = $apply.inputSchema.properties.$name
+      if (-not $property -or $property.PSObject.Properties['default']) {
+        throw "Installed MCP must preserve saved settings when '$name' is omitted."
+      }
     }
-    $checks.appearanceDefaults = 'pass'
+    $checks.partialApplySchema = 'pass'
     $process.StandardInput.Close()
     if (-not $process.WaitForExit(5000) -or $process.ExitCode -ne 0) { throw 'Installed MCP server did not close successfully.' }
     $checks.mcp = 'pass'
@@ -126,12 +186,17 @@ try {
   $state = Join-Path $data 'state.json'
   [IO.File]::WriteAllText($state, '{"enabled":false,"installerTest":"keep"}', [Text.UTF8Encoding]::new($false))
   $stateHash = (Get-FileHash -LiteralPath $state).Hash
+  $cacheFile = Join-Path $data 'test-cache.mp4'
+  $accountFile = Join-Path $profile 'auth.json'
+  [IO.File]::WriteAllText($cacheFile, 'isolated cache fixture', [Text.UTF8Encoding]::new($false))
+  [IO.File]::WriteAllText($accountFile, '{"installerTest":"keep; not real credentials"}', [Text.UTF8Encoding]::new($false))
+  $cacheHash = (Get-FileHash -LiteralPath $cacheFile).Hash
+  $accountHash = (Get-FileHash -LiteralPath $accountFile).Hash
   $env:CODEX_SKIN_DATA_DIR = Join-Path $testRoot 'different-data'
   Run-Setup -LogName 'reinstall.log'
   $again = Get-Content -LiteralPath $recordFile -Raw -Encoding UTF8 | ConvertFrom-Json
   if ($again.dataDir -ne $data -or $again.codexHome -ne $profile -or (Get-FileHash -LiteralPath $state).Hash -ne $stateHash) { throw 'Reinstallation changed the saved profile, data path or settings.' }
   $checks.reinstall = 'pass'
-  $uninstaller = Join-Path $appRoot 'unins000.exe'
   if (-not $uninstaller.StartsWith($testRoot + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Refusing an uninstaller outside the test directory.' }
   $process = Start-Process -FilePath $uninstaller -WindowStyle Hidden -Wait -PassThru -ArgumentList @(
     '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=`"$(Join-Path $testRoot 'uninstall.log')`""
@@ -139,13 +204,18 @@ try {
   )
   if ($process.ExitCode -ne 0) { throw "Uninstaller failed: $($process.ExitCode)" }
   if ((Get-FileHash -LiteralPath $state).Hash -ne $stateHash) { throw 'Uninstall removed or changed wallpaper data.' }
+  if ((Get-FileHash -LiteralPath $cacheFile).Hash -ne $cacheHash) { throw 'Uninstall removed or changed wallpaper caches.' }
+  if ((Get-FileHash -LiteralPath $accountFile).Hash -ne $accountHash) { throw 'Uninstall removed or changed Codex account files.' }
   if (Test-Path -LiteralPath $registrationKey) { throw 'The uninstall registration was not removed.' }
   $listed = & $cli plugin list --json | ConvertFrom-Json
   if ($LASTEXITCODE -ne 0 -or @($listed.installed | Where-Object { $_.pluginId -eq 'dsh-plugin-wallpaper-engine-codex@codex-live-wallpaper' }).Count) { throw 'The plugin is still registered after uninstall.' }
   if (Test-Path -LiteralPath $appRoot) { throw 'The test application directory remains after uninstall.' }
   if (-not $hadDesktopShortcut -and (Test-Path -LiteralPath $desktop)) { throw 'Silent testing created an unexpected desktop shortcut.' }
+  if ($VerifyIcons -and (Test-Path -LiteralPath $testGroup)) { throw 'The test Start menu group remains after uninstall.' }
   $checks.uninstall = 'pass'
   $checks.dataRetained = 'pass'
+  $checks.cacheRetained = 'pass'
+  $checks.accountRetained = 'pass'
   if ($cliHandle) {
     if ((Get-FileHash -LiteralPath $privateCli).Hash -ne $privateHash -or @(Get-ChildItem -LiteralPath $runtimeRoot -Directory).Count -ne 1) {
       throw 'Reinstall/uninstall changed the occupied reusable CLI bundle.'
@@ -159,5 +229,6 @@ try {
   $env:CODEX_SKIN_DATA_DIR = $oldData
   $env:PATH = $oldPath
   $env:LOCALAPPDATA = $oldLocalAppData
+  $env:CODEX_CLI_PATH = $oldCliPath
   [IO.File]::WriteAllText((Join-Path $testRoot 'report.json'), ($checks | ConvertTo-Json) + "`n", [Text.UTF8Encoding]::new($false))
 }

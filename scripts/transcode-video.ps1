@@ -43,6 +43,8 @@ function Wait-WinRtActionWithProgress($Operation, [Type]$ProgressType) {
 
 $inputFile = Wait-WinRtResult ([Windows.Storage.StorageFile,Windows,ContentType=WindowsRuntime]::GetFileFromPathAsync((Get-Item -LiteralPath $InputPath).FullName)) ([Windows.Storage.StorageFile,Windows,ContentType=WindowsRuntime])
 $videoProperties = Wait-WinRtResult ($inputFile.Properties.GetVideoPropertiesAsync()) ([Windows.Storage.FileProperties.VideoProperties,Windows,ContentType=WindowsRuntime])
+$sourceProfile = Wait-WinRtResult ([Windows.Media.MediaProperties.MediaEncodingProfile,Windows,ContentType=WindowsRuntime]::CreateFromFileAsync($inputFile)) ([Windows.Media.MediaProperties.MediaEncodingProfile,Windows,ContentType=WindowsRuntime])
+$sourceHasAudio = $null -ne $sourceProfile.Audio
 $sourceWidth = [int]$videoProperties.Width
 $sourceHeight = [int]$videoProperties.Height
 if ($sourceWidth -le 0 -or $sourceHeight -le 0) { throw 'Could not read the source video dimensions.' }
@@ -57,7 +59,11 @@ $outputFolder = Wait-WinRtResult ([Windows.Storage.StorageFolder,Windows,Content
 $outputFile = Wait-WinRtResult ($outputFolder.CreateFileAsync((Split-Path -Leaf $OutputPath), [Windows.Storage.CreationCollisionOption,Windows,ContentType=WindowsRuntime]::ReplaceExisting)) ([Windows.Storage.StorageFile,Windows,ContentType=WindowsRuntime])
 
 $profile = [Windows.Media.MediaProperties.MediaEncodingProfile,Windows,ContentType=WindowsRuntime]::CreateMp4([Windows.Media.MediaProperties.VideoEncodingQuality,Windows,ContentType=WindowsRuntime]::HD1080p)
-$profile.Audio = $null
+if (-not $sourceHasAudio) {
+  $profile.Audio = $null
+} elseif ($null -eq $profile.Audio) {
+  throw 'The MP4 output profile did not provide an AAC audio track.'
+}
 $profile.Video.Width = $outputWidth
 $profile.Video.Height = $outputHeight
 $profile.Video.Bitrate = $VideoBitrateKbps * 1000
@@ -71,6 +77,12 @@ if (-not $prepared.CanTranscode) { throw "Windows Media Foundation cannot transc
 Wait-WinRtActionWithProgress ($prepared.TranscodeAsync()) ([double])
 
 $outputInfo = Get-Item -LiteralPath $OutputPath
+$outputProfile = Wait-WinRtResult ([Windows.Media.MediaProperties.MediaEncodingProfile,Windows,ContentType=WindowsRuntime]::CreateFromFileAsync($outputFile)) ([Windows.Media.MediaProperties.MediaEncodingProfile,Windows,ContentType=WindowsRuntime])
+$outputAudio = $outputProfile.Audio
+$outputHasAudio = $null -ne $outputAudio
+if ($sourceHasAudio -ne $outputHasAudio) {
+  throw "Transcoded output audio mismatch: source has audio=$sourceHasAudio, output has audio=$outputHasAudio."
+}
 [pscustomobject]@{
   sourceWidth = $sourceWidth
   sourceHeight = $sourceHeight
@@ -79,4 +91,11 @@ $outputInfo = Get-Item -LiteralPath $OutputPath
   outputBytes = $outputInfo.Length
   bitrateKbps = $VideoBitrateKbps
   frameRate = $MaxFrameRate
+  sourceHasAudio = $sourceHasAudio
+  outputHasAudio = $outputHasAudio
+  hasAudio = $outputHasAudio
+  audioSubtype = if ($outputHasAudio) { [string]$outputAudio.Subtype } else { $null }
+  audioCodec = if ($outputHasAudio) { [string]$outputAudio.Subtype } else { $null }
+  audioChannels = if ($outputHasAudio) { [int]$outputAudio.ChannelCount } else { $null }
+  audioSampleRate = if ($outputHasAudio) { [int]$outputAudio.SampleRate } else { $null }
 } | ConvertTo-Json -Compress

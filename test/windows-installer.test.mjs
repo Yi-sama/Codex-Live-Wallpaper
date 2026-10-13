@@ -28,6 +28,10 @@ test('Windows setup is per-user and ships only an EXE distribution', () => {
   assert.match(setup, /CloseApplications=no/);
   assert.match(setup, /RestartApplications=no/);
   assert.match(setup, /skipifsilent unchecked/);
+  assert.match(setup, /Uninstallable=yes/);
+  assert.match(setup, /UninstallFilesDir=\{app\}/);
+  assert.match(setup, /Name: "\{group\}\\Uninstall Codex Live Wallpaper"; Filename: "\{uninstallexe\}"/);
+  assert.match(setup, /VersionInfoVersion=\{#AppNumericVersion\}/);
   assert.doesNotMatch(setup, /filesandordirs|\[Registry\]/);
   assert.doesNotMatch(setup, /Name: "\{localappdata\}.*data/);
   assert.match(build, /Get-FileHash/);
@@ -36,10 +40,43 @@ test('Windows setup is per-user and ships only an EXE distribution', () => {
   assert.doesNotMatch(build, /Compress-Archive|Remove-Item/);
 });
 
+test('Windows installer uses the original ChatGPT multi-size icon for setup, shortcuts, and uninstall display', () => {
+  const setup = readFileSync(new URL('../packaging/windows/setup.iss', import.meta.url), 'utf8');
+  const build = readFileSync(new URL('../scripts/build-windows-installer.ps1', import.meta.url), 'utf8');
+  assert.match(setup, /SetupIconFile=assets\\setup-icon\.ico/);
+  assert.match(setup, /UninstallDisplayIcon=\{app\}\\setup-icon\.ico/);
+  assert.match(setup, /Name: "\{group\}\\Codex Live Wallpaper";[^\r\n]*IconFilename: "\{app\}\\setup-icon\.ico"/);
+  assert.match(setup, /Name: "\{group\}\\Uninstall Codex Live Wallpaper";[^\r\n]*IconFilename: "\{app\}\\setup-icon\.ico"/);
+  assert.match(setup, /Name: "\{userdesktop\}\\Codex Live Wallpaper";[^\r\n]*IconFilename: "\{app\}\\setup-icon\.ico"/);
+  assert.match(build, /packaging\\windows\\assets\\setup-icon\.ico/);
+
+  const ico = readFileSync(new URL('../packaging/windows/assets/setup-icon.ico', import.meta.url));
+  assert.equal(ico.readUInt16LE(0), 0);
+  assert.equal(ico.readUInt16LE(2), 1);
+  assert.equal(ico.readUInt16LE(4), 8);
+  assert.equal(createHash('sha256').update(ico).digest('hex'), '56b60f54c33d204eb6c0bfea1283fc3e82c0d3966d428fe98176a2335d2fe57c');
+  const sizes = [];
+  for (let index = 0; index < ico.readUInt16LE(4); index++) {
+    const offset = 6 + 16 * index;
+    const size = ico[offset] || 256;
+    const imageSize = ico.readUInt32LE(offset + 8);
+    const imageOffset = ico.readUInt32LE(offset + 12);
+    assert.equal(ico[offset + 1] || 256, size);
+    assert.equal(ico.readUInt16LE(offset + 6), 32);
+    assert.ok(imageOffset + imageSize <= ico.length);
+    assert.equal(ico.readUInt32BE(imageOffset), 0x89504e47);
+    assert.equal(ico.toString('ascii', imageOffset + 12, imageOffset + 16), 'IHDR');
+    assert.equal(ico.readUInt32BE(imageOffset + 16), size);
+    assert.equal(ico.readUInt32BE(imageOffset + 20), size);
+    sizes.push(size);
+  }
+  assert.deepEqual(sizes, [16, 20, 24, 32, 40, 48, 64, 256]);
+});
+
 test('Windows packaging scripts parse in Windows PowerShell', { skip: process.platform !== 'win32' }, () => {
   for (const relative of [
+    '../scripts/launch-codex-with-skin.ps1',
     '../scripts/build-windows-installer.ps1',
-    '../scripts/codex-desktop.ps1',
     '../packaging/windows/installer-actions.ps1',
     '../packaging/windows/start-codex.ps1',
     '../packaging/windows/verify-installer.ps1',
@@ -130,81 +167,77 @@ function installerFunctions() {
   `;
 }
 
+test('setup and uninstall refuse running Codex before changing files or plugin registration', () => {
+  const actions = readFileSync(new URL('../packaging/windows/installer-actions.ps1', import.meta.url), 'utf8');
+  const setup = readFileSync(new URL('../packaging/windows/setup.iss', import.meta.url), 'utf8');
+  assert.match(actions, /if \(\$Action -in @\('Check', 'Uninstall'\)\) \{ Assert-CodexClosed -Root \$AppRoot \}/);
+  assert.ok(actions.indexOf('Assert-CodexClosed -Root $AppRoot') < actions.indexOf('$script:cli = Find-CodexCli'));
+  assert.doesNotMatch(actions, /Stop-Process|taskkill|\.Kill\(/i);
+  assert.match(setup, /CloseCodex=.*Codex.*background processes/);
+  assert.equal((setup.match(/CustomMessage\('CloseCodex'\)/g) || []).length, 2);
+  assert.equal((setup.match(/Pos\('CODEX_STILL_RUNNING'/g) || []).length, 2);
+  assert.ok(setup.indexOf("'Check', LogPath") < setup.indexOf('if CurStep = ssPostInstall'));
+});
+
+test('setup detects background GUI and its bundled Node without blocking unrelated CLI or Node processes', {
+  skip: process.platform !== 'win32',
+}, () => {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'skin-setup-running-')));
+  const desktop = join(root, 'Codex Desktop');
+  const legacy = join(root, 'Legacy Codex');
+  const app = join(root, 'wallpaper app');
+  mkdirSync(join(desktop, 'resources', 'bin'), { recursive: true });
+  mkdirSync(join(legacy, 'resources'), { recursive: true });
+  writeFileSync(join(desktop, 'resources', 'bin', 'codex.exe'), 'CLI fixture; never executed');
+  writeFileSync(join(legacy, 'resources', 'codex.exe'), 'CLI fixture; never executed');
+  const quote = value => value.replaceAll("'", "''");
+  powershell(`${installerFunctions()}
+    $root = '${quote(app)}'
+    $script:processes = @()
+    function Get-Process {
+      [CmdletBinding()] param([string[]]$Name)
+      if (($Name -join ',') -ne 'Codex,ChatGPT,node') { throw 'Process discovery was not scoped.' }
+      return $script:processes
+    }
+    function Stop-Process { throw 'Setup must never stop user processes.' }
+    function Invoke-Codex { throw 'Readiness checks must not invoke the CLI.' }
+    $cases = @(
+      [pscustomobject]@{ Id = 101; ProcessName = 'Codex'; Path = '${quote(join(desktop, 'Codex.exe'))}'; MainWindowHandle = 0 },
+      [pscustomobject]@{ Id = 102; ProcessName = 'ChatGPT'; Path = '${quote(join(legacy, 'ChatGPT.exe'))}'; MainWindowHandle = 0 },
+      [pscustomobject]@{ Id = 103; ProcessName = 'node'; Path = (Join-Path $root 'runtime\\node.exe'); MainWindowHandle = 0 }
+    )
+    foreach ($case in $cases) {
+      $script:processes = @($case)
+      $blocked = $false
+      try { Assert-CodexClosed -Root $root }
+      catch {
+        $blocked = $_.Exception.Message.Contains('CODEX_STILL_RUNNING') -and
+          $_.Exception.Message.Contains("PID $($case.Id)") -and $_.Exception.Message.Contains('No process was stopped.')
+      }
+      if (-not $blocked) { throw "Background process was not explained: $($case.Id)" }
+    }
+    $script:processes = @(
+      [pscustomobject]@{ Id = 201; ProcessName = 'codex'; Path = '${quote(join(desktop, 'resources', 'bin', 'codex.exe'))}' },
+      [pscustomobject]@{ Id = 202; ProcessName = 'ChatGPT'; Path = 'C:\\unrelated\\ChatGPT.exe' },
+      [pscustomobject]@{ Id = 203; ProcessName = 'node'; Path = 'C:\\unrelated\\runtime\\node.exe' }
+    )
+    Assert-CodexClosed -Root $root
+    $script:processes = @()
+    Assert-CodexClosed -Root $root
+    if (Test-Path -LiteralPath $root) { throw 'Readiness checks modified the installation directory.' }
+  `);
+});
+
 function launcherFunctions() {
   const script = fileURLToPath(new URL('../scripts/launch-codex-with-skin.ps1', import.meta.url)).replaceAll("'", "''");
-  const desktop = fileURLToPath(new URL('../scripts/codex-desktop.ps1', import.meta.url)).replaceAll("'", "''");
   return `
     $ErrorActionPreference = 'Stop'
-    . '${desktop}'
     $ast = [Management.Automation.Language.Parser]::ParseFile('${script}', [ref]$null, [ref]$null)
     $ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] }, $false) |
       ForEach-Object { Invoke-Expression $_.Extent.Text }
     $env:CODEX_CLI_PATH = $null
   `;
 }
-
-test('Windows installer uses the supplied multi-size icon and passes only selected shortcut paths', () => {
-  const setup = readFileSync(new URL('../packaging/windows/setup.iss', import.meta.url), 'utf8');
-  const build = readFileSync(new URL('../scripts/build-windows-installer.ps1', import.meta.url), 'utf8');
-  assert.match(setup, /SetupIconFile=assets\\setup-icon\.ico/);
-  assert.match(setup, /UninstallDisplayIcon=\{app\}\\setup-icon\.ico/);
-  assert.match(setup, /if not WizardNoIcons then/);
-  assert.match(setup, /if WizardIsTaskSelected\('desktopicon'\) then/);
-  assert.match(setup, /-StartMenuShortcut/);
-  assert.match(setup, /-DesktopShortcut/);
-  assert.match(build, /packaging\\windows\\assets\\setup-icon\.ico/);
-  const ico = readFileSync(new URL('../packaging/windows/assets/setup-icon.ico', import.meta.url));
-  assert.equal(ico.readUInt16LE(0), 0);
-  assert.equal(ico.readUInt16LE(2), 1);
-  const sizes = [];
-  for (let index = 0; index < ico.readUInt16LE(4); index++) {
-    const offset = 6 + 16 * index;
-    const size = ico[offset] || 256;
-    assert.equal(ico[offset + 1] || 256, size);
-    assert.ok(ico.readUInt32LE(offset + 12) + ico.readUInt32LE(offset + 8) <= ico.length);
-    sizes.push(size);
-  }
-  assert.deepEqual(sizes, [16, 24, 32, 48, 64, 128, 256]);
-});
-
-test('Windows shortcuts use the Codex GUI icon without changing launch arguments or creating unwanted links', {
-  skip: process.platform !== 'win32',
-}, () => {
-  const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'skin-shortcut-icons-')));
-  const desktop = join(root, 'desktop.lnk');
-  const menu = join(root, 'menu.lnk');
-  const omitted = join(root, 'not-selected.lnk');
-  const gui = join(root, 'app', 'Codex.exe');
-  const cli = join(root, 'app', 'resources', 'bin', 'codex.exe');
-  mkdirSync(join(root, 'app', 'resources', 'bin'), { recursive: true });
-  writeFileSync(gui, readFileSync(process.execPath));
-  writeFileSync(cli, 'CLI fixture; never executed');
-  const plugin = fileURLToPath(new URL('..', import.meta.url));
-  const quote = value => value.replaceAll("'", "''");
-  powershell(`${installerFunctions()}
-    $env:CODEX_CLI_PATH = '${quote(cli)}'
-    function Get-AppxPackage { [CmdletBinding()] param([string]$Name) return $null }
-    $shell = New-Object -ComObject WScript.Shell
-    $arguments = '-NoProfile -WindowStyle Hidden -File "C:\\fixture\\start-codex.ps1"'
-    foreach ($path in @('${quote(desktop)}', '${quote(menu)}')) {
-      $link = $shell.CreateShortcut($path)
-      $link.TargetPath = Join-Path $PSHOME 'powershell.exe'
-      $link.Arguments = $arguments
-      $link.WorkingDirectory = '${quote(root)}'
-      $link.Save()
-    }
-    Set-CodexShortcutIcons -Paths @('${quote(desktop)}', '${quote(menu)}', '${quote(omitted)}') -PluginRoot '${quote(plugin)}'
-    foreach ($path in @('${quote(desktop)}', '${quote(menu)}')) {
-      $link = $shell.CreateShortcut($path)
-      if ($link.IconLocation -ne '${quote(gui)},0') { throw 'The shortcut did not use the GUI icon.' }
-      if ($link.TargetPath -ne (Join-Path $PSHOME 'powershell.exe') -or $link.Arguments -ne $arguments -or $link.WorkingDirectory -ne '${quote(root)}') {
-        throw 'Applying the icon changed the wallpaper launcher.'
-      }
-    }
-    if (Test-Path -LiteralPath '${quote(omitted)}') { throw 'An unselected shortcut was created.' }
-    Set-CodexShortcutIcons -Paths @() -PluginRoot 'C:\\unused'
-  `);
-});
 
 test('Windows launcher finds the manifest GUI and nested bundled CLI without selecting command helpers or aliases', {
   skip: process.platform !== 'win32',
@@ -457,12 +490,14 @@ test('Windows setup can run and reuse its private Store CLI, while real prerequi
     $null = New-Item -ItemType Directory -Path $env:TEMP
     $script:cli = Join-Path $PSHOME 'powershell.exe'
     $log = '${quote(join(root, 'failure.txt'))}'
+    $checkCommand = @'
+function Get-Process { [CmdletBinding()] param([string[]]$Name) return @() }
+& '${quote(fileURLToPath(new URL('../packaging/windows/installer-actions.ps1', import.meta.url)))}' -Action Check -AppRoot '${quote(join(root, 'unused app'))}' -CodexHome '${quote(join(root, 'isolated profile'))}' -CodexCliPath '${quote(join(store, 'codex.exe'))}' -LogFile '${quote(join(root, 'failure.txt'))}'
+'@
     $rejected = $false
     try {
       Invoke-Codex -Arguments @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-        '-File', '${quote(fileURLToPath(new URL('../packaging/windows/installer-actions.ps1', import.meta.url)))}',
-        '-Action', 'Check', '-AppRoot', '${quote(join(root, 'unused app'))}',
-        '-CodexHome', '${quote(join(root, 'isolated profile'))}', '-CodexCliPath', $CodexCliPath, '-LogFile', $log)
+        '-Command', $checkCommand)
     } catch { $rejected = $_.Exception.Message.Contains('exited with code 1') }
     if (-not $rejected) { throw 'A CLI without plugin commands must still fail the real prerequisite check.' }
     if ((Get-ChildItem -LiteralPath $env:TEMP).Count) { throw 'The action created an unnecessary temporary CLI bundle.' }

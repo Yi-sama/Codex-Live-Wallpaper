@@ -8,8 +8,12 @@ test('public release metadata is portable and preserves plugin identity and attr
   const manifest = JSON.parse(read('.codex-plugin/plugin.json'));
   const mcp = JSON.parse(read('.mcp.json')).mcpServers.codex_skin;
   assert.equal(pkg.name, 'codex-live-wallpaper');
-  assert.equal(pkg.version, '0.3.6');
+  assert.equal(pkg.version, '1.0.0');
   assert.equal(manifest.version, pkg.version);
+  assert.ok(read('scripts/mcp-server.mjs').includes(`version: '${pkg.version}'`));
+  assert.ok(read('scripts/build-windows-installer.ps1').includes(`[string]$Version = '${pkg.version}'`));
+  assert.ok(read('packaging/windows/setup.iss').includes(`#define AppVersion "${pkg.version}"`));
+  assert.ok(read('packaging/windows/setup.iss').includes(`#define AppNumericVersion "${pkg.version}"`));
   assert.equal(manifest.name, 'dsh-plugin-wallpaper-engine-codex');
   assert.equal(manifest.interface.displayName, 'Codex Live Wallpaper');
   assert.equal(manifest.repository, 'https://github.com/Yi-sama/Codex-Live-Wallpaper');

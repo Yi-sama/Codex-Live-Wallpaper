@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readFileSync, readdirSync, readSync, statSync } from 'node:fs';
 import { basename, join, normalize, relative, resolve, sep } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
@@ -105,6 +105,63 @@ function inferType(file) {
   return 'scene';
 }
 
+const IMAGE_FILE = /\.(?:avif|bmp|gif|jpe?g|png|webp)$/i;
+const STATIC_IMAGE_FILE = /\.(?:avif|bmp|jpe?g|png|webp)$/i;
+const STATIC_TITLE = /\bstatic\b|静态/iu;
+
+function positiveDimensions(width, height) {
+  return Number.isInteger(width) && Number.isInteger(height) && width > 0 && height > 0
+    ? { width, height }
+    : null;
+}
+
+function readImageDimensions(file) {
+  let descriptor;
+  try {
+    descriptor = openSync(file, 'r');
+    const bytes = Buffer.alloc(64 * 1024);
+    const length = readSync(descriptor, bytes, 0, bytes.length, 0);
+    if (length < 10) return null;
+    if (bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) && length >= 24) {
+      return positiveDimensions(bytes.readUInt32BE(16), bytes.readUInt32BE(20));
+    }
+    if ((bytes.subarray(0, 6).toString('ascii') === 'GIF87a' || bytes.subarray(0, 6).toString('ascii') === 'GIF89a') && length >= 10) {
+      return positiveDimensions(bytes.readUInt16LE(6), bytes.readUInt16LE(8));
+    }
+    if (bytes.subarray(0, 2).equals(Buffer.from([0xff, 0xd8]))) {
+      for (let index = 2; index + 9 <= length;) {
+        if (bytes[index] !== 0xff) { index++; continue; }
+        while (index < length && bytes[index] === 0xff) index++;
+        const marker = bytes[index++];
+        if (marker === 0xd8 || marker === 0xd9) continue;
+        if (index + 2 > length) break;
+        const size = bytes.readUInt16BE(index);
+        if (size < 2 || index + size > length) break;
+        if ((marker >= 0xc0 && marker <= 0xc3) || (marker >= 0xc5 && marker <= 0xc7)
+            || (marker >= 0xc9 && marker <= 0xcb) || (marker >= 0xcd && marker <= 0xcf)) {
+          return positiveDimensions(bytes.readUInt16BE(index + 5), bytes.readUInt16BE(index + 3));
+        }
+        index += size;
+      }
+    }
+    if (bytes.subarray(0, 4).toString('ascii') === 'RIFF' && bytes.subarray(8, 12).toString('ascii') === 'WEBP' && length >= 30) {
+      const kind = bytes.subarray(12, 16).toString('ascii');
+      if (kind === 'VP8X') return positiveDimensions(1 + bytes.readUIntLE(24, 3), 1 + bytes.readUIntLE(27, 3));
+      if (kind === 'VP8L' && bytes[20] === 0x2f) {
+        return positiveDimensions(1 + bytes[21] + ((bytes[22] & 0x3f) << 8), 1 + (bytes[22] >> 6) + (bytes[23] << 2) + ((bytes[24] & 0x0f) << 10));
+      }
+      if (kind === 'VP8 ' && bytes[23] === 0x9d && bytes[24] === 0x01 && bytes[25] === 0x2a) {
+        return positiveDimensions(bytes.readUInt16LE(26) & 0x3fff, bytes.readUInt16LE(28) & 0x3fff);
+      }
+    }
+  } catch {
+    return null;
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+  return null;
+}
+
 function isPathInside(parent, child) {
   const rel = relative(resolve(parent), resolve(child));
   return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !/^[A-Za-z]:[\\/]/.test(rel));
@@ -208,29 +265,37 @@ export function readProject(projectDir, source = 'local') {
     const data = JSON.parse(readFileSync(projectPath, 'utf8'));
     if (!data || typeof data !== 'object' || typeof data.file !== 'string') return null;
     const folderId = basename(projectDir);
-    const type = typeof data.type === 'string' ? data.type.toLowerCase() : inferType(data.file);
+    const declaredType = typeof data.type === 'string' ? data.type.toLowerCase() : inferType(data.file);
+    const type = declaredType;
     const previewCandidate = typeof data.preview === 'string' ? resolve(projectDir, data.preview) : null;
     const previewPath = previewCandidate && existsSync(previewCandidate) ? previewCandidate : null;
     const filePath = resolveProjectFile(projectDir, data.file, type);
     const portableMediaExists = existsSync(filePath);
     const userProperties = normalizeUserProperties(data.general?.properties);
+    const title = typeof data.title === 'string' && data.title.trim() ? data.title.trim() : folderId;
+    const imageProject = IMAGE_FILE.test(data.file) && portableMediaExists;
+    const dimensions = imageProject ? readImageDimensions(filePath) : null;
+    const imagePreviewPath = previewPath || (imageProject ? filePath : null);
     return {
       id: source === 'workshop' ? folderId : `${source}:${folderId}`,
       source,
-      title: typeof data.title === 'string' && data.title.trim() ? data.title.trim() : folderId,
+      title,
       type: ['scene', 'video', 'web', 'application'].includes(type) ? type : 'scene',
       projectPath,
       projectDir,
       filePath,
-      previewPath,
+      previewPath: imagePreviewPath,
       userProperties,
+      isStatic: (STATIC_IMAGE_FILE.test(data.file) && portableMediaExists) || STATIC_TITLE.test(title),
+      sourceWidth: dimensions?.width ?? null,
+      sourceHeight: dimensions?.height ?? null,
       skinMode: type === 'video' && portableMediaExists
         ? 'video'
         : type === 'web' && portableMediaExists
           ? 'web'
           : type === 'scene' && portableMediaExists && filePath.toLowerCase().endsWith('.pkg')
             ? 'scene'
-          : previewPath
+          : imagePreviewPath
             ? 'preview'
             : 'unsupported',
     };

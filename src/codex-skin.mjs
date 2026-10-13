@@ -8,9 +8,13 @@ import { fileURLToPath } from 'node:url';
 import { enumerateWallpaperSources, resolveUserPropertyValues } from './wallpaper-engine.mjs';
 import { SceneRuntimeServer } from './scene-runtime.mjs';
 import { installSkinFeatures, normalizeRotation } from './skin-controls.mjs';
+import { installSkinRope } from './skin-rope.mjs';
+import { wallpaperCrop, installSkinPresentation } from './skin-crop.mjs';
+import { installSkinSidebar, SIDEBAR_ASSETS } from './skin-sidebar.mjs';
 
 const DEFAULT_CDP_PORT = Number(process.env.CODEX_SKIN_CDP_PORT || 0);
 const LAYER_ID = 'codex-wallpaper-engine-skin';
+const ROPE_IMAGE_URL = 'data:image/png;base64,' + readFileSync(new URL('./assets/skin-mascot.png', import.meta.url)).toString('base64');
 const SKIN_DATA_ROOT = process.env.CODEX_SKIN_DATA_DIR
   || join(process.env.LOCALAPPDATA || tmpdir(), 'CodexWallpaperEngineSkin');
 const DEFAULT_STATE_FILE = join(SKIN_DATA_ROOT, 'state.json');
@@ -114,7 +118,7 @@ function transcodeVideoForCodex(file) {
   if (process.env.CODEX_SKIN_DISABLE_COMPRESSION === '1' || source.size < minimumBytes) return null;
   const cacheRoot = join(SKIN_DATA_ROOT, 'transcoded');
   mkdirSync(cacheRoot, { recursive: true });
-  const settings = { maxWidth: 2560, maxHeight: 1440, bitrateKbps: 10000, frameRate: 30 };
+  const settings = { maxWidth: 2560, maxHeight: 1440, bitrateKbps: 10000, frameRate: 30, audio: 'preserve-aac-v1' };
   const key = createHash('sha256')
     .update(`${resolve(file)}\n${source.size}\n${source.mtimeMs}\n${JSON.stringify(settings)}`)
     .digest('hex').slice(0, 24);
@@ -142,6 +146,8 @@ function transcodeVideoForCodex(file) {
       renderResolution: `${metadata.outputWidth}x${metadata.outputHeight}`,
       frameRate: metadata.frameRate,
       bitrateKbps: metadata.bitrateKbps,
+      hasAudio: metadata.hasAudio,
+      audioCodec: metadata.audioCodec,
     };
     writeFileSync(metadataFile, JSON.stringify(result));
     return { filePath: output, ...result, cached: false };
@@ -154,6 +160,9 @@ function transcodeVideoForCodex(file) {
 export function selectEmbeddableMedia(project) {
   const maxVideoBytes = Math.max(1, Number(process.env.CODEX_SKIN_INLINE_VIDEO_MAX_MB || 24)) * 1024 * 1024;
   const maxBlobVideoBytes = Math.max(32, Number(process.env.CODEX_SKIN_BLOB_VIDEO_MAX_MB || 512)) * 1024 * 1024;
+  if (project.isStatic && /\.(png|jpe?g|webp|gif|bmp|avif)$/i.test(project.filePath || '')) {
+    return { mediaUrl: inlineMedia(project.filePath, 24 * 1024 * 1024), mode: 'preview', fallback: false, fallbackKind: null };
+  }
   if (project.type === 'scene' && project.filePath?.toLowerCase().endsWith('.pkg')
       && existsSync(project.filePath) && statSync(project.filePath).isFile()) {
     return {
@@ -186,6 +195,7 @@ export function selectEmbeddableMedia(project) {
       frameRate: compressed?.frameRate || null,
       bitrateKbps: compressed?.bitrateKbps || null,
       compressionCached: compressed?.cached || false,
+      hasAudio: compressed?.hasAudio ?? null,
     };
   }
   if (project.type === 'video' && process.env.CODEX_SKIN_DISABLE_FRAME_EXTRACTION !== '1') {
@@ -250,7 +260,42 @@ class CdpClient {
   }
 }
 
-export function makeInjectionScript({ mediaUrl, mediaFrames = [], frameDelayMs = 250, mode, sceneRendererUrl = null, scenePageUrl = null, sceneSourceUrl = null, sceneProjectUrl = null, panelOpacity = 0.2, scrimOpacity = 0.1, blurPx = 3, muted = true, volume = 0.3, fitMode = 'cover', zoom = 100, positionX = 50, positionY = 50, showControls = true, sourceOptions = [], currentId = null, userProperties = [], userPropertyValues = {}, rotation = {}, mouseEnabled = false, controllerId = null, instanceId = null, reuseExisting = false, selectionRequestId = null }) {
+export function makeSidebarUpgradeScript(controllerId = null) {
+  return `(() => {
+    if (!document.createElement('template').content) return { upgraded: false };
+    const runtime = window.__codexWallpaperRuntime;
+    const owner = ${JSON.stringify(controllerId)};
+    if (owner && runtime?.config.controllerId === owner && runtime.controllers.includes(owner)) {
+      const session = window.__codexWallpaperSidebarSession;
+      if (session?.controllerId === owner) session.runtime = runtime;
+      const pinned = session?.runtime === runtime && runtime.controllers.includes(session.controllerId);
+      runtime.sidebarOwner = pinned ? session.controllerId : owner;
+      window.__codexWallpaperSidebarOwner = runtime.sidebarOwner;
+    }
+    if (!window.__codexWallpaperLucide) {
+      const previousIcons = globalThis.lucide;
+      ${SIDEBAR_ASSETS.icons}
+      window.__codexWallpaperLucide = globalThis.lucide;
+      globalThis.lucide = previousIcons;
+    }
+    const installSidebar = ${installSkinSidebar.toString()};
+    const installPresentation = ${installSkinPresentation.toString()};
+    const installFeatures = ${installSkinFeatures.toString()};
+    const calculateCrop = ${wallpaperCrop.toString()};
+    const assets = ${JSON.stringify({ html: SIDEBAR_ASSETS.html, css: SIDEBAR_ASSETS.css })};
+    window.__codexWallpaperEnsureSidebar = () => installPresentation({
+      runtime: window.__codexWallpaperRuntime, assets, installSidebar, installFeatures, calculateCrop,
+    });
+    window.__codexWallpaperSidebarWatchCleanup?.();
+    const observer = new MutationObserver(() => window.__codexWallpaperEnsureSidebar());
+    observer.observe(document.body, { childList: true });
+    window.__codexWallpaperSidebarWatchCleanup = () => observer.disconnect();
+    const sidebar = window.__codexWallpaperEnsureSidebar();
+    return { upgraded: !!sidebar, version: sidebar?.version || null };
+  })()`;
+}
+
+export function makeInjectionScript({ mediaUrl, mediaFrames = [], frameDelayMs = 250, mode, sceneRendererUrl = null, scenePageUrl = null, sceneSourceUrl = null, sceneProjectUrl = null, panelOpacity = 0.2, scrimOpacity = 0.1, blurPx = 3, muted = true, volume = 0.3, fitMode = 'contain', zoom = 100, positionX = 50, positionY = 50, showControls = true, sourceOptions = [], currentId = null, userProperties = [], userPropertyValues = {}, rotation = {}, mouseEnabled = false, controllerId = null, instanceId = null, reuseExisting = false, selectionRequestId = null }) {
   volume = Number.isFinite(volume) ? Math.max(0, Math.min(1, volume)) : 0.3;
   rotation = normalizeRotation(rotation, sourceOptions);
   const config = JSON.stringify({ mediaUrl, mediaFrames, frameDelayMs, mode, sceneRendererUrl, scenePageUrl, sceneSourceUrl, sceneProjectUrl, panelOpacity, scrimOpacity, blurPx, muted, volume, fitMode, zoom, positionX, positionY, showControls, sourceOptions, currentId, userProperties, userPropertyValues, rotation, mouseEnabled: mouseEnabled === true, controllerId, instanceId });
@@ -261,18 +306,33 @@ export function makeInjectionScript({ mediaUrl, mediaFrames = [], frameDelayMs =
     }
     const cfg = ${config};
     const id = ${JSON.stringify(LAYER_ID)};
+    const installRope = ${installSkinRope.toString()};
+    const ropeImageUrl = ${JSON.stringify(ROPE_IMAGE_URL)};
     const existing = window.__codexWallpaperRuntime;
     const controllers = (existing?.controllers || []).filter(value => value !== cfg.controllerId);
     controllers.push(cfg.controllerId);
-    if (${Boolean(reuseExisting)} && typeof cfg.currentId === 'string'
+    if (${Boolean(reuseExisting)} && (typeof cfg.currentId === 'string' || cfg.mode === 'picker')
         && existing?.config.currentId === cfg.currentId && existing.sourceMode === cfg.mode
         && existing.restoreVersion === 4
         && Number.isFinite(existing.config.volume)
+        && (cfg.mode !== 'scene' || existing.sceneDiagnosticsVersion === 1)
         && existing.layer === document.getElementById(id)
         && existing.getMedia().isConnected && !existing.getMedia().error && !existing.failed) {
-      existing.config.controllerId = cfg.controllerId;
+      const sidebarSession = window.__codexWallpaperSidebarSession;
+      existing.config.controllerId = sidebarSession?.runtime === existing
+        && existing.controllers.includes(sidebarSession.controllerId)
+        ? sidebarSession.controllerId : cfg.controllerId;
       existing.controllers = controllers;
-      if (JSON.stringify(existing.config.sourceOptions) !== JSON.stringify(cfg.sourceOptions)) {
+      const controls = document.getElementById(id + '-controls');
+      if (controls && controls.ropeVersion !== 4) {
+        window.__codexWallpaperRopeCleanup?.();
+        window.__codexWallpaperRopeCleanup = installRope({
+          controls, toggle: controls.children[0], panel: controls.children[1], imageUrl: ropeImageUrl,
+        });
+      }
+      // A chat bridge can disappear while the launcher-owned sidebar remains alive.
+      if (existing.config.controllerId === cfg.controllerId
+          && JSON.stringify(existing.config.sourceOptions) !== JSON.stringify(cfg.sourceOptions)) {
         existing.config.sourceOptions = cfg.sourceOptions;
         const search = [...(document.getElementById(id + '-controls')?.querySelectorAll('input') || [])]
           .find(input => input.type === 'search');
@@ -282,9 +342,13 @@ export function makeInjectionScript({ mediaUrl, mediaFrames = [], frameDelayMs =
         if (grid) grid.scrollTop = scrollTop;
       }
       window.__codexWallpaperSyncPlayback?.();
+      ${makeSidebarUpgradeScript(controllerId)};
       return { ...existing.snapshot(), reused: true };
     }
     window.__codexWallpaperFeaturesCleanup?.();
+    window.__codexWallpaperSidebarCleanup?.();
+    window.__codexWallpaperRopeCleanup?.();
+    window.__codexWallpaperRopeCleanup = null;
     window.__codexWallpaperTransitionCleanup?.();
     const priorState = existing?.snapshot();
     const outgoing = existing && existing.config.currentId !== cfg.currentId && cfg.rotation.transition === 'fade'
@@ -307,8 +371,10 @@ export function makeInjectionScript({ mediaUrl, mediaFrames = [], frameDelayMs =
     window.__codexWallpaperVideoChunks = null;
 
     const rootStyle = document.documentElement.style;
-    rootStyle.setProperty('--codex-skin-panel-opacity', cfg.panelOpacity);
-    rootStyle.setProperty('--codex-skin-blur', cfg.blurPx + 'px');
+    if (cfg.mode !== 'picker') {
+      rootStyle.setProperty('--codex-skin-panel-opacity', cfg.panelOpacity);
+      rootStyle.setProperty('--codex-skin-blur', cfg.blurPx + 'px');
+    }
 
     const layer = document.createElement('div');
     layer.id = id;
@@ -372,6 +438,15 @@ export function makeInjectionScript({ mediaUrl, mediaFrames = [], frameDelayMs =
       border: '0', pointerEvents: 'none', imageRendering: 'auto'
     });
     styleMedia(media);
+    let sceneDiagnostics = null;
+    let sceneDiagnosticText = null;
+    const renderSceneDiagnostics = () => {
+      if (sceneDiagnosticText) sceneDiagnosticText.textContent = JSON.stringify({
+        id: cfg.currentId, requestedMode: 'scene', actualMode: cfg.mode,
+        inactive: document.hidden || !document.hasFocus(), error: sceneStatus?.error,
+        ...sceneDiagnostics,
+      }, null, 2);
+    };
     const fallbackToPreview = message => {
       if (cfg.mode !== 'scene') return;
       sceneStatus.state = 'error';
@@ -390,12 +465,18 @@ export function makeInjectionScript({ mediaUrl, mediaFrames = [], frameDelayMs =
       revealNew();
       if (playbackStatus) playbackStatus.textContent = 'Scene 加载失败' + (cfg.mediaUrl ? '，已回退到预览图' : '') + '：' + sceneStatus.error;
       setLoadingProgress(100, 'error');
+      renderSceneDiagnostics();
     };
     if (cfg.mode === 'scene') {
       const sceneMessageHandler = event => {
         if (event.origin !== sceneOrigin
-            || !['codex-scene-error', 'codex-scene-ready'].includes(event.data?.type)) return;
+            || !['codex-scene-error', 'codex-scene-ready', 'codex-scene-diagnostics'].includes(event.data?.type)) return;
         if (event.source !== media.contentWindow) return;
+        if (event.data.type === 'codex-scene-diagnostics') {
+          sceneDiagnostics = event.data.diagnostics;
+          renderSceneDiagnostics();
+          syncPlayback(true);
+        }
         if (event.data?.type === 'codex-scene-error') fallbackToPreview(event.data.message);
         if (event.data?.type === 'codex-scene-ready') {
           sceneStatus.state = 'ready';
@@ -508,28 +589,30 @@ export function makeInjectionScript({ mediaUrl, mediaFrames = [], frameDelayMs =
       }
     };
     const codexInactive = () => document.hidden || !document.hasFocus();
-    const syncPlayback = () => {
-      if (media instanceof HTMLVideoElement) {
+    const syncPlayback = (statusOnly = false) => {
+      if (!statusOnly && media instanceof HTMLVideoElement) {
         media.muted = cfg.muted;
         media.volume = cfg.volume;
-        if (codexInactive()) media.pause();
+        if (codexInactive() || cfg.userPaused) media.pause();
         else if (media.src) media.play().catch(() => {});
       }
-      if (cfg.mode === 'scene' && sceneStatus.state === 'ready') {
-        media.contentWindow?.postMessage({ type: 'codex-scene-playback', paused: codexInactive(), fitMode: cfg.fitMode,
+      if (!statusOnly && cfg.mode === 'scene' && sceneStatus.state === 'ready') {
+        media.contentWindow?.postMessage({ type: 'codex-scene-playback', paused: codexInactive() || !!cfg.userPaused,
+          fitMode: window.__codexWallpaperRuntime?.sidebar ? 'contain' : cfg.fitMode,
           muted: cfg.muted, volume: cfg.volume,
           properties: Object.fromEntries(Object.entries(cfg.userPropertyValues).map(([key, value]) => [key, { value }])) }, sceneOrigin);
       }
-      if (cfg.mode === 'frames') {
-        if (codexInactive() && window.__codexWallpaperFrameTimer) {
+      if (!statusOnly && cfg.mode === 'frames') {
+        if ((codexInactive() || cfg.userPaused) && window.__codexWallpaperFrameTimer) {
           cancelAnimationFrame(window.__codexWallpaperFrameTimer);
           window.__codexWallpaperFrameTimer = null;
-        } else if (!codexInactive()) resumeFrames?.();
+        } else if (!codexInactive() && !cfg.userPaused) resumeFrames?.();
       }
       if (playbackStatus && selectionPending) {
         playbackStatus.textContent = '正在切换并准备壁纸…';
       } else if (playbackStatus && sceneStatus?.state === 'loading') {
-        playbackStatus.textContent = document.hidden ? 'Scene 等待窗口显示后完成加载…' : '正在加载 Scene 场景…';
+        playbackStatus.textContent = document.hidden ? 'Scene 等待窗口显示后完成加载…'
+          : (sceneDiagnostics?.loadingSlow ? 'Scene 加载较慢，请查看诊断' : '正在加载 Scene 场景…');
       } else if (playbackStatus && sceneStatus?.state === 'error') {
         return;
       } else if (playbackStatus && cfg.mode === 'video-blob' && !window.__codexWallpaperBlobUrl) {
@@ -544,11 +627,15 @@ export function makeInjectionScript({ mediaUrl, mediaFrames = [], frameDelayMs =
       } else if (playbackStatus && cfg.mode === 'frames') {
         playbackStatus.textContent = '预览动画播放中 · 离开 Codex 自动暂停';
       } else if (playbackStatus && cfg.mode === 'scene') {
-        playbackStatus.textContent = 'Scene 实时渲染中 · 离开 Codex 自动暂停';
+        playbackStatus.textContent = sceneDiagnostics?.stalled ? 'Scene 渲染停滞，请查看诊断'
+          : 'Scene 实时渲染中' + (Number.isFinite(sceneDiagnostics?.fps) ? ' · ' + sceneDiagnostics.fps + ' FPS' : '');
+      } else if (playbackStatus && cfg.mode === 'picker') {
+        playbackStatus.textContent = cfg.sourceOptions.length ? '未选择壁纸' : '未发现可用的本地壁纸';
       }
     };
-    const playbackEvents = [['visibilitychange', syncPlayback, document], ['focusin', syncPlayback, document],
-      ['pageshow', syncPlayback, window], ['focus', syncPlayback, window], ['blur', syncPlayback, window]];
+    const playbackChanged = () => syncPlayback();
+    const playbackEvents = [['visibilitychange', playbackChanged, document], ['focusin', playbackChanged, document],
+      ['pageshow', playbackChanged, window], ['focus', playbackChanged, window], ['blur', playbackChanged, window]];
     playbackEvents.forEach(([name, handler, target]) => target.addEventListener(name, handler));
     window.__codexWallpaperPauseCleanup = () => playbackEvents.forEach(([name, handler, target]) => target.removeEventListener(name, handler));
     window.__codexWallpaperSyncPlayback = syncPlayback;
@@ -619,10 +706,15 @@ export function makeInjectionScript({ mediaUrl, mediaFrames = [], frameDelayMs =
       '[data-radix-popper-content-wrapper],[role="dialog"],[role="menu"],[role="listbox"]{background-color:rgba(20,22,26,.94)!important}',
       '@keyframes codex-skin-progress-indeterminate{0%{transform:translateX(-140%)}100%{transform:translateX(360%)}}'
     ].join('\\n');
-    document.head.appendChild(style);
+    if (cfg.mode !== 'picker') document.head.appendChild(style);
     if (outgoing) document.body.insertBefore(layer, outgoing.nextSibling);
     else document.body.prepend(layer);
-    document.body.insertBefore(blurLayer, layer.nextSibling);
+    if (cfg.mode !== 'picker') document.body.insertBefore(blurLayer, layer.nextSibling);
+    else {
+      layer.style.display = 'none';
+      window.__codexWallpaperControlsOpen = true;
+      window.__codexWallpaperPanelTab = 'library';
+    }
 
     if (cfg.showControls && location.protocol === 'app:' && !location.search.includes('avatar-overlay')) {
       const controls = document.createElement('div');
@@ -655,13 +747,19 @@ export function makeInjectionScript({ mediaUrl, mediaFrames = [], frameDelayMs =
         const sourceLabel = document.createElement('span'); sourceLabel.textContent = '壁纸';
         const source = document.createElement('select');
         source.style.cssText = 'min-width:0;background:#24272d;color:#fff;border:1px solid #4a4f58;border-radius:6px;padding:4px';
+        if (cfg.mode === 'picker') {
+          const placeholder = document.createElement('option');
+          placeholder.value = ''; placeholder.textContent = '选择壁纸'; placeholder.selected = true; placeholder.disabled = true;
+          source.appendChild(placeholder);
+        }
         cfg.sourceOptions.forEach(item => { const option = document.createElement('option'); option.value = item.id; option.textContent = item.title; option.selected = item.id === cfg.currentId; source.appendChild(option); });
         source.addEventListener('change', () => requestSelection(source.value));
         sourceRow.append(sourceLabel, source); panel.appendChild(sourceRow);
       }
       playbackStatus = document.createElement('div');
+      playbackStatus.setAttribute('data-skin-status', '');
       playbackStatus.textContent = cfg.mode === 'video-blob' ? '等待加载原视频…' : (cfg.mode === 'video' ? '原视频播放中 · 离开 Codex 自动暂停' : '预览动画模式 · 离开 Codex 自动暂停');
-      playbackStatus.style.cssText = 'margin:6px 0 10px;color:#aeb7c6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
+      playbackStatus.style.cssText = 'margin:6px 0 10px;color:#aeb7c6;overflow-wrap:anywhere';
       panel.appendChild(playbackStatus);
       playbackProgressTrack = document.createElement('div');
       playbackProgressTrack.setAttribute('role', 'progressbar');
@@ -672,6 +770,16 @@ export function makeInjectionScript({ mediaUrl, mediaFrames = [], frameDelayMs =
       playbackProgressTrack.appendChild(playbackProgressFill);
       panel.appendChild(playbackProgressTrack);
       if (cfg.mode === 'video-blob') setLoadingProgress(0); else playbackProgressTrack.style.display = 'none';
+      if (sceneStatus) {
+        const diagnostics = document.createElement('details');
+        diagnostics.style.cssText = 'margin:8px 0';
+        const summary = document.createElement('summary'); summary.textContent = 'Scene 诊断';
+        sceneDiagnosticText = document.createElement('pre');
+        sceneDiagnosticText.style.cssText = 'font:11px monospace;white-space:pre-wrap;overflow-wrap:anywhere;max-height:180px;overflow:auto';
+        diagnostics.append(summary, sceneDiagnosticText);
+        panel.appendChild(diagnostics);
+        renderSceneDiagnostics();
+      }
       const addRange = (label, min, max, step, value, onInput) => {
         const row = document.createElement('label');
         row.style.cssText = 'display:grid;grid-template-columns:76px 1fr 38px;align-items:center;gap:7px;margin:7px 0';
@@ -706,11 +814,11 @@ export function makeInjectionScript({ mediaUrl, mediaFrames = [], frameDelayMs =
       if (['scene', 'video', 'video-blob'].includes(cfg.mode)) {
         const soundRow = document.createElement('label');
         soundRow.style.cssText = 'display:grid;grid-template-columns:76px 1fr;align-items:center;gap:7px;margin:7px 0';
-        const soundLabel = document.createElement('span'); soundLabel.textContent = '声音';
-        const sound = document.createElement('input'); sound.type = 'checkbox'; sound.checked = !cfg.muted;
-        sound.setAttribute('aria-label', '壁纸声音');
+        const soundLabel = document.createElement('span'); soundLabel.textContent = '静音';
+        const sound = document.createElement('input'); sound.type = 'checkbox'; sound.checked = cfg.muted;
+        sound.setAttribute('aria-label', '壁纸静音');
         sound.style.cssText = 'justify-self:start;accent-color:#4aa3ff';
-        sound.addEventListener('change', () => { cfg.muted = !sound.checked; syncPlayback(); persistSettings(); });
+        sound.addEventListener('change', () => { cfg.muted = sound.checked; syncPlayback(); persistSettings(); });
         soundRow.append(soundLabel, sound); panel.appendChild(soundRow);
         addRange('音量 %', 0, 100, 1, Math.round(cfg.volume * 100), value => {
           cfg.volume = value / 100;
@@ -746,12 +854,12 @@ export function makeInjectionScript({ mediaUrl, mediaFrames = [], frameDelayMs =
         };
         const colorFromHex = (hex, original) => {
           const values = [1, 3, 5].map(index => parseInt(hex.slice(index, index + 2), 16) / 255);
-          if (Array.isArray(original)) return values;
+          if (Array.isArray(original)) return [...values, ...original.slice(3)];
           const colorParts = typeof original === 'string'
             ? original.trim().replaceAll(',', ' ').split(' ').filter(Boolean)
             : null;
-          if (colorParts?.length === 3 && colorParts.every(part => Number.isFinite(Number(part)))) {
-            return values.map(value => Number(value.toFixed(4))).join(' ');
+          if (colorParts?.length >= 3 && colorParts.every(part => Number.isFinite(Number(part)))) {
+            return [...values.map(value => Number(value.toFixed(4))), ...colorParts.slice(3)].join(' ');
           }
           return hex;
         };
@@ -848,6 +956,7 @@ export function makeInjectionScript({ mediaUrl, mediaFrames = [], frameDelayMs =
       });
       controls.append(toggle, panel);
       document.body.appendChild(controls);
+      window.__codexWallpaperRopeCleanup = installRope({ controls, toggle, panel, imageUrl: ropeImageUrl });
     }
     const snapshot = () => ({
       installed: true, instanceId: cfg.instanceId, mode: cfg.mode, url: location.href,
@@ -856,6 +965,7 @@ export function makeInjectionScript({ mediaUrl, mediaFrames = [], frameDelayMs =
       videoTransferActive: !!window.__codexWallpaperVideoChunks,
       sceneLoading: sceneStatus?.state === 'loading',
       sceneError: sceneStatus?.error || null,
+      sceneDiagnostics,
       settings: {
         panelOpacity: cfg.panelOpacity, scrimOpacity: cfg.scrimOpacity, blurPx: cfg.blurPx,
         muted: cfg.muted, volume: cfg.volume, fitMode: cfg.fitMode, zoom: cfg.zoom, positionX: cfg.positionX,
@@ -864,7 +974,7 @@ export function makeInjectionScript({ mediaUrl, mediaFrames = [], frameDelayMs =
       }
     });
     window.__codexWallpaperRuntime = {
-      config: cfg, restoreVersion: 4, sourceMode: cfg.mode, controllers, layer, sceneStatus, getMedia: () => media, snapshot,
+      config: cfg, restoreVersion: 4, sceneDiagnosticsVersion: 1, sourceMode: cfg.mode, controllers, layer, sceneStatus, getMedia: () => media, snapshot,
       suspend() {
         if (media instanceof HTMLVideoElement) { media.muted = true; media.pause(); }
         if (cfg.mode === 'scene' && sceneStatus.state === 'ready') {
@@ -891,6 +1001,7 @@ export function makeInjectionScript({ mediaUrl, mediaFrames = [], frameDelayMs =
     else if (cfg.mode === 'preview') media.addEventListener('load', revealNew, { once: true });
     if (media.complete || media.readyState >= 2) revealNew();
     syncPlayback();
+    ${makeSidebarUpgradeScript(controllerId)};
     return { ...snapshot(), reused: false };
   })()`;
 }
@@ -898,7 +1009,14 @@ export function makeInjectionScript({ mediaUrl, mediaFrames = [], frameDelayMs =
 const REMOVE_SCRIPT = `(() => {
   const id = ${JSON.stringify(LAYER_ID)};
   window.__codexWallpaperFeaturesCleanup?.();
+  window.__codexWallpaperSidebarWatchCleanup?.();
+  window.__codexWallpaperSidebarWatchCleanup = null;
+  window.__codexWallpaperEnsureSidebar = null;
+  window.__codexWallpaperSidebarCleanup?.();
+  window.__codexWallpaperSidebarCleanup = null;
   window.__codexWallpaperFeaturesCleanup = null;
+  window.__codexWallpaperRopeCleanup?.();
+  window.__codexWallpaperRopeCleanup = null;
   window.__codexWallpaperTransitionCleanup?.();
   window.__codexWallpaperRuntime = null;
   window.__codexWallpaperReleaseController = null;
@@ -1021,13 +1139,16 @@ export class CodexSkinBridge {
     this.saved = readSavedSkinState(this.stateFile);
     this.restoreInFlight = false;
     this.lastRestoreError = null;
-    this.restoreWatchdog = setInterval(() => this.restoreSaved().catch(() => {}), restoreIntervalMs);
-    this.restoreWatchdog.unref();
-    setTimeout(() => this.restoreSaved().catch(() => {}), 0).unref();
+    this.restoreWatchdog = null;
+    if (restoreIntervalMs > 0) {
+      this.restoreWatchdog = setInterval(() => this.restoreSaved().catch(() => {}), restoreIntervalMs);
+      this.restoreWatchdog.unref();
+      setTimeout(() => this.restoreSaved().catch(() => {}), 0).unref();
+    }
   }
 
   savedSettings() {
-    return this.active ? {
+    return this.active && this.active.mode !== 'picker' ? {
       id: this.active.currentId,
       panelOpacity: this.active.panelOpacity,
       scrimOpacity: this.active.scrimOpacity,
@@ -1070,6 +1191,16 @@ export class CodexSkinBridge {
     } finally {
       this.restoreInFlight = false;
     }
+  }
+
+  async showPicker() {
+    this.saved = readSavedSkinState(this.stateFile);
+    if (this.saved) return this.restoreSaved();
+    const projects = enumerateWallpaperSources().filter(project => project.skinMode !== 'unsupported');
+    this.active = { mode: 'picker', currentId: null, instanceId: randomUUID(),
+      sourceOptions: await this.sceneRuntime.librarySources(projects) };
+    try { return await this.injectCurrent(); }
+    catch (error) { this.active = null; throw error; }
   }
 
   async debugStatus() {
@@ -1121,6 +1252,11 @@ export class CodexSkinBridge {
     });
     if (evaluated.exceptionDetails) throw new Error(evaluated.exceptionDetails.text);
     const state = evaluated.result?.value;
+    if (this.active.mode === 'picker') {
+      const persisted = readSavedSkinState(this.stateFile);
+      if (persisted) await this.apply(persisted, { reuseExisting: true });
+      return;
+    }
     if (state?.settings) {
       // New-document scripts capture old values; the elected owner must read shared disk state.
       const persisted = this.stateFile ? readSavedSkinState(this.stateFile) : null;
@@ -1158,7 +1294,7 @@ export class CodexSkinBridge {
       if (typeof settings.muted === 'boolean') this.active.muted = settings.muted;
       if (Number.isFinite(settings.volume)) this.active.volume = Math.max(0, Math.min(1, settings.volume));
       if (['cover', 'contain', 'fill'].includes(settings.fitMode)) this.active.fitMode = settings.fitMode;
-      if (Number.isFinite(settings.zoom)) this.active.zoom = Math.max(50, Math.min(200, Math.round(settings.zoom)));
+      if (Number.isFinite(settings.zoom)) this.active.zoom = Math.max(50, Math.min(400, Math.round(settings.zoom)));
       if (Number.isFinite(settings.positionX)) this.active.positionX = Math.max(0, Math.min(100, Math.round(settings.positionX)));
       if (Number.isFinite(settings.positionY)) this.active.positionY = Math.max(0, Math.min(100, Math.round(settings.positionY)));
       if (settings.userPropertyValues && typeof settings.userPropertyValues === 'object') {
@@ -1171,6 +1307,10 @@ export class CodexSkinBridge {
       this.persistActive();
       return;
     }
+    if (command?.action === 'refresh-sources' && this.active) {
+      return this.refreshSources();
+    }
+    if (command?.action === 'preview-thumbnail') return this.replyThumbnail(command, client);
     if ((!selectionRequest && command?.action !== 'select') || typeof command.id !== 'string') return;
     const previous = this.active;
     const settings = command.settings && typeof command.settings === 'object' ? command.settings : previous ? {
@@ -1212,6 +1352,70 @@ export class CodexSkinBridge {
           selectionRequest ? { selectionRequestId: command.requestId } : undefined);
       })
       .catch((error) => this.reportVideoError(error));
+  }
+
+  async replyThumbnail(command, client) {
+    const active = this.active;
+    if (!active || !client || command.instanceId !== active.instanceId
+        || typeof command.requestId !== 'string' || !command.requestId || command.requestId.length > 160) return;
+    const source = active.sourceOptions?.find(item => item.id === command.id && item.thumbnailUrl === command.url);
+    if (!source?.thumbnailUrl) return;
+    const result = { requestId: command.requestId, id: source.id, url: source.thumbnailUrl };
+    try {
+      result.dataUrl = this.sceneRuntime.readLibraryPreview(source.id, source.thumbnailUrl);
+    } catch (error) {
+      result.error = String(error?.message || error).slice(0, 300);
+    }
+    if (this.active !== active) return;
+    const evaluated = await client.call('Runtime.evaluate', {
+      expression: `(() => {
+        if (location.href !== 'app://-/index.html' || window !== window.top) return false;
+        const runtime = window.__codexWallpaperRuntime;
+        if (runtime?.config.controllerId !== ${JSON.stringify(this.controllerId)}
+            || runtime.config.instanceId !== ${JSON.stringify(active.instanceId)}
+            || !runtime.config.sourceOptions.some(item => item.id === ${JSON.stringify(source.id)}
+              && item.thumbnailUrl === ${JSON.stringify(source.thumbnailUrl)})) return false;
+        runtime.sidebar?.resolveThumbnail?.(${JSON.stringify(result)});
+        return true;
+      })()`,
+      returnByValue: true,
+    });
+    if (evaluated.exceptionDetails) throw new Error(evaluated.exceptionDetails.text);
+  }
+
+  async refreshSources() {
+    if (this.sourceRefreshTask) return this.sourceRefreshTask;
+    const active = this.active;
+    if (!active) return;
+    this.sourceRefreshTask = (async () => {
+      let sources;
+      let errorMessage = null;
+      try {
+        sources = await this.sceneRuntime.librarySources(enumerateWallpaperSources());
+      } catch (error) {
+        errorMessage = error instanceof Error ? error.message : String(error);
+      }
+      if (this.active !== active) return;
+      if (sources) active.sourceOptions = sources;
+      for (const client of this.clients.values()) {
+        const evaluated = await client.call('Runtime.evaluate', {
+          expression: `(() => {
+            if (location.href !== 'app://-/index.html' || window !== window.top) return false;
+            const runtime = window.__codexWallpaperRuntime;
+            if (runtime?.config.controllerId !== ${JSON.stringify(this.controllerId)}
+                || runtime.config.currentId !== ${JSON.stringify(active.currentId)}) return false;
+            const sources = ${JSON.stringify(sources || null)};
+            if (sources) runtime.config.sourceOptions = sources;
+            runtime.sidebar?.refreshLibrary?.(${JSON.stringify(errorMessage)});
+            return true;
+          })()`,
+          returnByValue: true,
+        });
+        if (evaluated.exceptionDetails) throw new Error(evaluated.exceptionDetails.text);
+      }
+    })();
+    try { return await this.sourceRefreshTask; }
+    finally { this.sourceRefreshTask = null; }
   }
 
   async reportVideoError(error, clients = this.clients.values(), transfer = null) {
@@ -1305,8 +1509,15 @@ export class CodexSkinBridge {
     return results;
   }
 
-  async apply({ id, panelOpacity, scrimOpacity, blurPx, muted, volume, fitMode, zoom, positionX, positionY, showControls, userPropertyValues, rotation, mouseEnabled }, { reuseExisting = false, selectionRequestId = null } = {}) {
+  async apply(options, { reuseExisting = false, selectionRequestId = null } = {}) {
     this.saved = readSavedSkinState(this.stateFile) || this.saved;
+    const { id, userPropertyValues } = options;
+    // Omitted adjustments inherit the latest shared state, not first-install defaults.
+    const { panelOpacity, scrimOpacity, blurPx, muted, volume, fitMode, zoom, positionX, positionY,
+      showControls, rotation, mouseEnabled } = {
+      ...this.savedSettings(), ...this.saved,
+      ...Object.fromEntries(Object.entries(options).filter(([, value]) => value !== undefined)),
+    };
     const projects = enumerateWallpaperSources();
     const project = projects.find((item) => item.id === id);
     if (!project) throw new Error(`Unknown Wallpaper Engine source id: ${id}`);
@@ -1337,8 +1548,8 @@ export class CodexSkinBridge {
       blurPx: Number.isFinite(blurPx) ? Math.max(0, Math.min(60, Math.round(blurPx))) : 3,
       muted: muted !== false,
       volume: Number.isFinite(volume) ? Math.max(0, Math.min(1, volume)) : 0.3,
-      fitMode: ['cover', 'contain', 'fill'].includes(fitMode) ? fitMode : 'cover',
-      zoom: Number.isFinite(zoom) ? Math.max(50, Math.min(200, Math.round(zoom))) : 100,
+      fitMode: ['cover', 'contain', 'fill'].includes(fitMode) ? fitMode : 'contain',
+      zoom: Number.isFinite(zoom) ? Math.max(50, Math.min(400, Math.round(zoom))) : 100,
       positionX: Number.isFinite(positionX) ? Math.max(0, Math.min(100, Math.round(positionX))) : 50,
       positionY: Number.isFinite(positionY) ? Math.max(0, Math.min(100, Math.round(positionY))) : 50,
       showControls: showControls !== false,
@@ -1389,6 +1600,7 @@ export class CodexSkinBridge {
       compressionRatio: selected.compressionRatio || null,
       bitrateKbps: selected.bitrateKbps || null,
       compressionCached: selected.compressionCached || false,
+      hasAudio: selected.hasAudio ?? null,
       targetCount: targets.length,
       settings: {
         panelOpacity: this.active.panelOpacity, scrimOpacity: this.active.scrimOpacity,
@@ -1458,8 +1670,26 @@ export class CodexSkinBridge {
       rotation: this.active.rotation,
       mouseEnabled: this.active.mouseEnabled,
     } : null;
+    const renderers = await Promise.all([...this.clients].map(async ([targetId, client]) => {
+      try {
+        const evaluated = await client.call('Runtime.evaluate', {
+          expression: `(() => {
+            if (location.href !== 'app://-/index.html') return null;
+            const runtime = window.__codexWallpaperRuntime;
+            return runtime ? { ...runtime.snapshot(), currentId: runtime.config.currentId,
+              failed: Boolean(runtime.failed), inactive: document.hidden || !document.hasFocus() } : null;
+          })()`,
+          returnByValue: true,
+        });
+        if (evaluated.exceptionDetails) throw new Error(evaluated.exceptionDetails.text);
+        return { targetId, available: Boolean(evaluated.result?.value), ...evaluated.result?.value };
+      } catch (error) {
+        return { targetId, available: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    }));
     return {
       debug: await this.debugStatus(), active, connectedTargets: this.clients.size,
+      renderers,
       persistence: {
         enabled: Boolean(this.saved),
         selectedId: this.saved?.id || null,

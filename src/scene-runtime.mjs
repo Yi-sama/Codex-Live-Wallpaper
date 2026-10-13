@@ -1,4 +1,4 @@
-import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
+import { closeSync, createReadStream, existsSync, fstatSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
@@ -13,6 +13,7 @@ const PLAYER_FILE = fileURLToPath(new URL('./scene-player.mjs', import.meta.url)
 const RENDERER_ADAPTER = `
 export function mountCodexScene(config, callbacks) {
   Te.onFirstFrame = callbacks.onReady;
+  Te.onSceneInfo = callbacks.onSceneInfo;
   Te.onError = callbacks.onError;
   Te.onDiagnostic = callbacks.onDiagnostic;
   Te.userVolume = 0;
@@ -35,6 +36,64 @@ export function mountCodexScene(config, callbacks) {
     pushPointer: (u, v, buttons, mods) => window.__wp.pushPointer(u, v, buttons, mods),
     pointerLeave: () => window.__wp.pointerLeave(),
     pushWheel: (dx, dy, mode, mods) => window.__wp.pushWheel(dx, dy, mode, mods),
+    diagnostics() {
+      const canvas = document.querySelector('canvas');
+      const gl = canvas?.getContext('webgl2');
+      const frame = window.__wpStats?.frame?.() || {};
+      return { ...frame, fps: Math.round(frame.fps || 0),
+        lastRenderAgeMs: Te.frameMeter?.last ? Math.round(performance.now() - Te.frameMeter.last) : null,
+        canvasWidth: canvas?.width || 0, canvasHeight: canvas?.height || 0,
+        webgl2: Boolean(gl), contextLost: gl?.isContextLost() || false,
+        layerCount: window.__sceneLayers?.length || 0 };
+    },
+    snapshot() {
+      return new Promise((resolve, reject) => {
+        const probe = document.createElement('canvas');
+        probe.width = 16;
+        probe.height = 9;
+        const context = probe.getContext('2d', { willReadFrequently: true });
+        let remainingFrames = 120;
+        const nextFrame = callback => {
+          if (--remainingFrames < 0) {
+            resolve(null);
+            return false;
+          }
+          requestAnimationFrame(callback);
+          return true;
+        };
+        const hasVisiblePixels = canvas => {
+          if (!context) return true;
+          try {
+            context.clearRect(0, 0, probe.width, probe.height);
+            context.drawImage(canvas, 0, 0, probe.width, probe.height);
+            const pixels = context.getImageData(0, 0, probe.width, probe.height).data;
+            for (let index = 0; index < pixels.length; index += 4) {
+              if (pixels[index] || pixels[index + 1] || pixels[index + 2] || pixels[index + 3]) return true;
+            }
+          } catch {
+            return true;
+          }
+          return false;
+        };
+        const waitForRenderedScene = () => {
+          if (!nextFrame(() => {
+            if (!nextFrame(() => nextFrame(() => {
+              const canvas = document.querySelector('canvas');
+              if (!canvas?.width || !canvas?.height || !hasVisiblePixels(canvas)) return waitForRenderedScene();
+              try {
+                const dataUrl = window.__wp.capture?.();
+                resolve(typeof dataUrl === 'string' && dataUrl.startsWith('data:image/')
+                  ? { dataUrl, width: canvas.width, height: canvas.height }
+                  : null);
+              } catch (error) {
+                reject(error);
+              }
+            }))) return;
+          })) return;
+        };
+        waitForRenderedScene();
+      });
+    },
     release: () => window.__wp.release(),
   };
 }
@@ -161,16 +220,46 @@ export class SceneRuntimeServer {
       let thumbnailUrl = null;
       const file = project.previewPath;
       if (file && pathInside(project.projectDir, file) && /\.(png|jpe?g|webp|gif)$/i.test(file)
-          && existsSync(file) && statSync(file).isFile() && statSync(file).size <= 24 * 1024 * 1024) {
+          && existsSync(file) && statSync(file).isFile() && statSync(file).size <= 24 * 1024 * 1024
+          && pathInside(realpathSync(project.projectDir), realpathSync(file))) {
         const token = createHash('sha256').update(`${resolve(file)}\n${statSync(file).mtimeMs}`).digest('hex').slice(0, 32);
         const extension = /\.([^.]+)$/.exec(file)[1].toLowerCase();
         const type = extension === 'jpg' || extension === 'jpeg' ? 'image/jpeg' : `image/${extension}`;
-        this.previews.set(token, { file, type });
+        const ids = this.previews.get(token)?.ids || new Set();
+        ids.add(project.id);
+        this.previews.set(token, { file: realpathSync(file), root: realpathSync(project.projectDir), type, ids });
         thumbnailUrl = `${baseUrl}/preview/${token}`;
       }
       return { id: project.id, title: project.title, type: project.type, source: project.source,
-        skinMode: ['web', 'application'].includes(project.type) ? 'preview' : project.skinMode, thumbnailUrl };
+        skinMode: ['web', 'application'].includes(project.type) ? 'preview' : project.skinMode, thumbnailUrl,
+        category: project.isStatic ? 'static' : project.type === 'video' ? 'video' : project.skinMode === 'scene' ? 'scene' : 'preview',
+        sourceWidth: project.sourceWidth ?? null, sourceHeight: project.sourceHeight ?? null };
     });
+  }
+
+  readLibraryPreview(id, thumbnailUrl) {
+    const token = typeof thumbnailUrl === 'string' && this.baseUrl
+      && thumbnailUrl.startsWith(this.baseUrl + '/preview/')
+      ? thumbnailUrl.slice((this.baseUrl + '/preview/').length) : null;
+    const entry = token && /^[a-f0-9]{32}$/.test(token) && this.previews.get(token);
+    if (!entry?.ids?.has(id)) throw new Error('This preview is not registered to the selected library item.');
+    if (!pathInside(entry.root, realpathSync(entry.file))) throw new Error('Preview path escaped its registered project directory.');
+    const descriptor = openSync(entry.file, 'r');
+    try {
+      const size = fstatSync(descriptor).size;
+      if (!size || size > 6 * 1024 * 1024) throw new Error('Preview exceeds the 6 MiB local-transfer limit.');
+      const bytes = Buffer.alloc(size);
+      let offset = 0;
+      while (offset < size) {
+        const count = readSync(descriptor, bytes, offset, size - offset, offset);
+        if (!count) throw new Error('Preview file changed or could not be read completely.');
+        offset += count;
+      }
+      if (fstatSync(descriptor).size !== size) throw new Error('Preview file changed during loading.');
+      return `data:${entry.type};base64,${bytes.toString('base64')}`;
+    } finally {
+      closeSync(descriptor);
+    }
   }
 
   handle(req, res) {

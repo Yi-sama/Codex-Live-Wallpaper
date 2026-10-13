@@ -17,7 +17,7 @@ const launcherPath = fileURLToPath(new URL('./launch-codex-with-skin.ps1', impor
 const tools = [
   {
     name: 'codex_skin_status',
-    description: 'Check Codex skin readiness, persistence/auto-restore state, the local debug bridge, and available Wallpaper Engine source media. This does not change the desktop wallpaper.',
+    description: 'Check Codex skin readiness, persistence/auto-restore state, the local debug bridge, actual connected renderer loading/errors/preview fallback, and available Wallpaper Engine source media. This does not activate a wallpaper or change the desktop wallpaper.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
@@ -35,30 +35,30 @@ const tools = [
   },
   {
     name: 'codex_skin_apply',
-    description: 'Embed a selected Wallpaper Engine source or its safe preview behind the Codex app UI. Requires the local debug port and never changes the Windows desktop wallpaper.',
+    description: 'Embed a selected Wallpaper Engine source or its safe preview behind the Codex app UI. Omitted settings retain the latest saved adjustments, including audio; send only fields the user wants changed. Requires the local debug port and never changes the Windows desktop wallpaper.',
     inputSchema: {
       type: 'object',
       required: ['id'],
       properties: {
         id: { type: 'string', description: 'Exact id returned by codex_skin_list_sources.' },
-        panelOpacity: { type: 'number', minimum: 0.1, maximum: 1, default: 0.2 },
-        scrimOpacity: { type: 'number', minimum: 0, maximum: 0.9, default: 0.1 },
-        blurPx: { type: 'number', minimum: 0, maximum: 60, default: 3 },
-        muted: { type: 'boolean', default: true, description: 'Mute video or Scene wallpaper audio.' },
-        volume: { type: 'number', minimum: 0, maximum: 1, default: 0.3, description: 'Wallpaper audio volume (0 to 1); remembered while muted.' },
-        fitMode: { type: 'string', enum: ['cover', 'contain', 'fill'], default: 'cover', description: 'How the media fits the Codex window.' },
-        zoom: { type: 'number', minimum: 50, maximum: 200, default: 100 },
-        positionX: { type: 'number', minimum: 0, maximum: 100, default: 50 },
-        positionY: { type: 'number', minimum: 0, maximum: 100, default: 50 },
-        showControls: { type: 'boolean', default: true, description: 'Show an in-app skin adjustment panel.' },
+        panelOpacity: { type: 'number', minimum: 0.1, maximum: 1 },
+        scrimOpacity: { type: 'number', minimum: 0, maximum: 0.9 },
+        blurPx: { type: 'number', minimum: 0, maximum: 60 },
+        muted: { type: 'boolean', description: 'Mute video or Scene wallpaper audio. Unspecified audio stays unchanged; a first selection starts muted.' },
+        volume: { type: 'number', minimum: 0, maximum: 1, description: 'Wallpaper audio volume (0 to 1); remembered while muted.' },
+        fitMode: { type: 'string', enum: ['cover', 'contain', 'fill'], description: 'How the media fits the Codex window.' },
+        zoom: { type: 'number', minimum: 50, maximum: 400 },
+        positionX: { type: 'number', minimum: 0, maximum: 100 },
+        positionY: { type: 'number', minimum: 0, maximum: 100 },
+        showControls: { type: 'boolean', description: 'Show an in-app skin adjustment panel; enabled on first selection.' },
         userPropertyValues: { type: 'object', description: 'Optional Wallpaper Engine Scene author-property values keyed by property name. Unsupported or unknown keys are ignored.' },
-        mouseEnabled: { type: 'boolean', default: false, description: 'Forward passive mouse events to supported Scene wallpapers, excluding input controls.' },
+        mouseEnabled: { type: 'boolean', description: 'Forward passive mouse events to supported Scene wallpapers, excluding input controls.' },
         rotation: {
           type: 'object', description: 'Wallpaper playlist, timing and transition settings.',
           properties: {
             enabled: { type: 'boolean' },
             ids: { type: 'array', items: { type: 'string' }, maxItems: 500 },
-            intervalSeconds: { type: 'integer', minimum: 5, maximum: 86400 },
+            intervalSeconds: { type: 'integer', minimum: 5, maximum: 43200 },
             transition: { type: 'string', enum: ['fade', 'none'] },
             durationMs: { type: 'integer', minimum: 100, maximum: 2000 },
           },
@@ -158,7 +158,7 @@ lines.on('line', async (line) => {
   if (!Object.hasOwn(message, 'id')) return;
   try {
     if (message.method === 'initialize') {
-      send({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: message.params?.protocolVersion || '2025-06-18', capabilities: { tools: { listChanged: false } }, serverInfo: { name: 'codex-wallpaper-skin', version: '0.3.6' } } });
+      send({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: message.params?.protocolVersion || '2025-06-18', capabilities: { tools: { listChanged: false } }, serverInfo: { name: 'codex-wallpaper-skin', version: '1.0.0' } } });
       return;
     }
     if (message.method === 'ping') { send({ jsonrpc: '2.0', id: message.id, result: {} }); return; }

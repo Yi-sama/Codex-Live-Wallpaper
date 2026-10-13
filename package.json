@@ -1,6 +1,6 @@
 {
   "name": "codex-live-wallpaper",
-  "version": "0.3.6",
+  "version": "1.0.0",
   "description": "Local Wallpaper Engine video and Scene backgrounds for the Codex desktop app.",
   "type": "module",
   "files": [
