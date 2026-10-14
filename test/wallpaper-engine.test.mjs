@@ -143,6 +143,22 @@ test('builds a native Codex theme import string', () => {
   assert.equal(payload.theme.opaqueWindows, false);
 });
 
+test('keeps complete author markup and distinguishes information from editable text', () => {
+  const label = '<img src="https://example.invalid/' + 'a'.repeat(220) + '"><br>Author information';
+  const properties = normalizeUserProperties({
+    notice: { type: 'text', text: label, value: '' },
+    caption: { type: 'textinput', text: 'Caption', value: 'Hello' },
+    enabled: { type: 'bool', text: 'Enabled', value: true },
+  });
+  assert.equal(properties[0].label, label, 'Truncating an image tag must not discard the following readable label.');
+  assert.equal(properties[0].displayOnly, true);
+  assert.equal(properties[1].type, 'text');
+  assert.notEqual(properties[1].displayOnly, true);
+  assert.equal(properties[2].type, 'bool');
+  assert.deepEqual(resolveUserPropertyValues(properties), { notice: '', caption: 'Hello', enabled: true },
+    'Display classification must not discard existing property values.');
+});
+
 test('builds an injection script without embedding filesystem paths', () => {
   const script = makeInjectionScript({ mediaUrl: 'http://127.0.0.1:4321/content/token/video.mp4', mode: 'video' });
   assert.match(script, /codex-wallpaper-engine-skin/);

@@ -58,10 +58,10 @@ test('sidebar ownership transfers only to a registered matching upgraded control
     ['next', ['old'], 'old'],
   ]) {
     const runtime = { config: { controllerId: 'next' }, controllers: registered,
-      sidebarOwner: 'old', sidebar: { version: 7, refresh() {} } };
+      sidebarOwner: 'old', sidebar: { version: 8, refresh() {} } };
     const host = { __codexWallpaperRuntime: runtime, __codexWallpaperSidebarOwner: 'old',
       __codexWallpaperLucide: {} };
-    const controls = { sidebarVersion: 7 };
+    const controls = { sidebarVersion: 8 };
     const result = runInNewContext(makeSidebarUpgradeScript(requested), {
       window: host,
       document: { createElement: () => ({ content: {} }), getElementById: () => controls, body: {} },
@@ -83,7 +83,9 @@ test('author controls live only in Settings and hide entirely without author par
   assert.match(settingsPage, /data-slot="author-controls"/);
   assert.match(settingsPage, /data-author-section hidden/);
   assert.doesNotMatch(SIDEBAR_ASSETS.html, /data-author-empty|这张壁纸没有可调整/);
-  assert.match(installSkinSidebar.toString(), /one\('\[data-author-section\]'\)\.hidden = authorControls\.length === 0/);
+  assert.match(installSkinSidebar.toString(), /one\('\[data-author-section\]'\)\.hidden = editableCount === 0 && authorInfo\.hidden/);
+  assert.match(settingsPage, /data-author-info hidden/);
+  assert.match(settingsPage, /data-author-notes/);
   assert.equal([...SIDEBAR_ASSETS.html.matchAll(/data-slot="author-controls"/g)].length, 1);
   assert.match(SIDEBAR_ASSETS.css, /skin-sidebar__author-row/);
 });

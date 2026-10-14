@@ -21,7 +21,7 @@ export function wallpaperCrop({ width, height, viewportWidth, viewportHeight, fi
 export function installSkinPresentation({ runtime, assets, installSidebar, installFeatures, calculateCrop }) {
   const controls = document.getElementById('codex-wallpaper-engine-skin-controls');
   if (!runtime || !controls || !document.createElement('template').content) return null;
-  if (runtime.sidebar?.version === 7 && controls.sidebarVersion === 7) {
+  if (runtime.sidebar?.version === 8 && controls.sidebarVersion === 8) {
     runtime.sidebar.refresh();
     return runtime.sidebar;
   }
@@ -270,7 +270,7 @@ export function installSkinPresentation({ runtime, assets, installSidebar, insta
     runtime.layer.style.background = originalLayerBackground;
     if (runtime.sidebar === api) runtime.sidebar = null;
   };
-  const api = { version: 7, refresh: () => { applyGeometry(); ui.refresh(); },
+  const api = { version: 8, refresh: () => { applyGeometry(); ui.refresh(); },
     refreshLibrary: ui.refreshLibrary, resolveThumbnail: ui.resolveThumbnail,
     cleanup, getCropPreview, applyGeometry, setOpen: ui.setOpen };
   runtime.sidebar = api;

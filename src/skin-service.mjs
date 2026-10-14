@@ -4,6 +4,7 @@ import { readSavedSkinState } from './codex-skin.mjs';
 export async function runSkinService({ bridge, isRunning, wait = ms => new Promise(resolve => setTimeout(resolve, ms)), onReady = () => {}, onError = console.error }) {
   try {
     if (!isRunning()) return;
+    bridge.pinSidebar = true;
     const initial = readSavedSkinState(bridge.stateFile);
     if (initial) await bridge.apply(initial, { reuseExisting: true });
     else await bridge.showPicker();

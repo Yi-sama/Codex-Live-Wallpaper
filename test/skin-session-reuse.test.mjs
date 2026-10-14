@@ -639,6 +639,23 @@ test('a pinned sidebar keeps its live library URLs when a short-lived chat bridg
   assert.equal(host.window.__codexWallpaperRuntime, runtime);
 });
 
+test('a launcher-owned bridge pins its renderer without a temporary handoff helper', () => {
+  const host = renderer();
+  const sources = settings.sourceOptions.map(item => ({ ...item, thumbnailUrl: 'http://127.0.0.1:10001/' + item.id }));
+  host.install({ ...settings, sourceOptions: sources, pinSidebar: true });
+  finishVideo(host);
+  const runtime = host.window.__codexWallpaperRuntime;
+  const media = runtime.getMedia();
+  assert.equal(host.window.__codexWallpaperSidebarSession?.controllerId, 'first');
+  assert.equal(host.window.__codexWallpaperSidebarSession?.runtime, runtime);
+  const restored = host.install({ ...settings, controllerId: 'temporary', instanceId: 'temporary-media',
+    reuseExisting: true, sourceOptions: sources.map(item => ({ ...item, thumbnailUrl: 'http://127.0.0.1:10002/' + item.id })) });
+  assert.equal(restored.reused, true);
+  assert.equal(runtime.config.controllerId, 'first');
+  assert.deepEqual(JSON.parse(JSON.stringify(runtime.config.sourceOptions)), sources);
+  assert.equal(runtime.getMedia(), media);
+});
+
 test('library refresh coalesces requests and updates only the owning renderer without reinjection', async () => {
   const host = renderer();
   host.install(settings);

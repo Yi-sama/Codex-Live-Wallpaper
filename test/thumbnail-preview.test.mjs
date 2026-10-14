@@ -75,6 +75,65 @@ test('thumbnail replies are scoped to the originating owner, instance and librar
   assert.equal(replies.at(-1).error, 'Preview file missing');
 });
 
+test('thumbnail fallback accepts the retained renderer instance after a bridge handoff', async () => {
+  const source = { id: 'one', thumbnailUrl: 'http://127.0.0.1:1234/preview/token' };
+  const replies = [];
+  const runtime = { config: { controllerId: 'successor', instanceId: 'retained', sourceOptions: [source] },
+    sidebar: { resolveThumbnail: value => replies.push(value) } };
+  const window = { __codexWallpaperRuntime: runtime };
+  window.top = window;
+  const client = { skinInstanceId: 'retained', async call(method, params) {
+    assert.equal(method, 'Runtime.evaluate');
+    return { result: { value: runInNewContext(params.expression, {
+      window, location: { href: 'app://-/index.html' },
+    }) } };
+  } };
+  let reads = 0;
+  const bridge = Object.assign(Object.create(CodexSkinBridge.prototype), {
+    controllerId: 'successor', active: { instanceId: 'new-bridge', sourceOptions: [source] },
+    sceneRuntime: { readLibraryPreview() { reads++; return 'data:image/png;base64,AA=='; } },
+  });
+  const send = instanceId => bridge.handleClientEvent({ method: 'Runtime.bindingCalled',
+    params: { name: 'codexSkinCommand', payload: JSON.stringify({
+      action: 'preview-thumbnail', controllerId: 'successor', instanceId,
+      requestId: 'request', id: source.id, url: source.thumbnailUrl,
+    }) } }, client);
+  await send('retained');
+  assert.equal(reads, 1, 'The live renderer ID must not be rejected in favor of the bridge-generated ID.');
+  assert.equal(replies.length, 1);
+  await send('new-bridge');
+  assert.equal(reads, 1, 'A bridge ID is not proof of ownership of the retained renderer.');
+  runtime.config.instanceId = 'replacement';
+  await send('retained');
+  assert.equal(replies.length, 1, 'Late replies must still be rejected after renderer replacement.');
+});
+
+test('document restoration updates the client instance used by thumbnail replies', async () => {
+  const source = { id: 'one', thumbnailUrl: 'http://127.0.0.1:1234/preview/token' };
+  const replies = [];
+  const runtime = { config: { controllerId: 'owner', instanceId: 'new-document', currentId: 'one',
+      sourceOptions: [source] },
+    snapshot: () => ({ instanceId: 'new-document', settings: {} }),
+    sidebar: { resolveThumbnail: result => replies.push(result) } };
+  const window = { __codexWallpaperRuntime: runtime };
+  window.top = window;
+  const client = { skinInstanceId: 'retired-document', async call(_method, params) {
+    return { result: { value: runInNewContext(params.expression, {
+      window, location: { href: 'app://-/index.html' },
+    }) } };
+  } };
+  const bridge = Object.assign(Object.create(CodexSkinBridge.prototype), {
+    controllerId: 'owner', active: { instanceId: 'new-document', currentId: 'one', mode: 'scene', sourceOptions: [source] },
+    savedSettings: () => ({ id: 'one' }),
+    sceneRuntime: { readLibraryPreview: () => 'data:image/png;base64,AA==' },
+  });
+  await bridge.restoreClient(client);
+  assert.equal(client.skinInstanceId, 'new-document');
+  await bridge.replyThumbnail({ instanceId: 'new-document', requestId: 'new-request',
+    id: 'one', url: source.thumbnailUrl }, client);
+  assert.equal(replies.length, 1);
+});
+
 test('the Scene snapshot adapter accepts opaque black pixels and reports capture exceptions', async t => {
   const projectDir = mkdtempSync(join(tmpdir(), 'black-preview-'));
   const filePath = join(projectDir, 'scene.pkg');

@@ -6,7 +6,7 @@ Bring local Wallpaper Engine videos and compatible Scene wallpapers into the Cod
 
 This changes the **Codex window background**, not the Windows desktop wallpaper. It does not require DSH or Cordis.
 
-> **Official release: v1.0.0.** Windows 10 / Windows 11 x64, unsigned EXE installer only; no separate portable ZIP. Tested successfully on another Windows 10 computer by the project maintainer. This is an independent community project using an experimental local debug bridge.
+> **Official release: v1.0.0, rebuilt on October 15, 2026.** Includes preview-service and author-settings fixes. Windows 10 / Windows 11 x64, unsigned EXE installer only; no separate portable ZIP. The original release was tested successfully on another Windows 10 computer by the project maintainer. This is an independent community project using an experimental local debug bridge.
 
 [Download v1.0.0](https://github.com/Yi-sama/Codex-Live-Wallpaper/releases/tag/v1.0.0) | [Release notes](docs/releases/v1.0.0.md) | [Changelog](CHANGELOG.md) | [Issues](https://github.com/Yi-sama/Codex-Live-Wallpaper/issues)
 
@@ -16,7 +16,7 @@ This changes the **Codex window background**, not the Windows desktop wallpaper.
 - **Wallpaper sidebar:** right-docked library, local thumbnails, title/ID search, and Static, Video, Scene, or Preview filters.
 - **Interface settings:** a separate gear page for panel material, light/dark/system theme, and font.
 - **Appearance controls:** fit mode, zoom, position, panel transparency, background scrim, and blur.
-- **Author properties:** supported Scene switches, sliders, colors, menus, and text inputs, saved per wallpaper.
+- **Author properties:** supported Scene switches, sliders, color swatches, menus, and text inputs, saved per wallpaper; author notes and safe links are separately collapsed.
 - **Playlist rotation:** add, reorder, or remove wallpapers, select previous/next, choose an interval, and use fade or direct transitions.
 - **Audio controls:** mute and volume for playable video tracks and compatible Scene sound layers.
 - **Optional Scene interaction:** passive mouse forwarding that excludes Codex inputs, menus, dialogs, and skin controls.
@@ -83,9 +83,10 @@ Installation diagnostics normally remain in `%LOCALAPPDATA%\CodexLiveWallpaper\l
 ## Tested and Known Limits
 
 - The project maintainer tested this version successfully on another Windows 10 computer and confirmed that the previously reported workflow now works.
-- All 136 automated regression tests passed. Checks cover the sidebar and crop mapping, preview recovery, saved settings, audio-preserving transcoding, release metadata, installer process checks, and launcher icons.
+- All 140 automated regression tests passed for the October 15 replacement build. Checks cover the sidebar and crop mapping, preview-service handoff, author-note classification, saved settings, audio-preserving transcoding, release metadata, installer process checks, and launcher icons.
 - Isolated Windows install/reinstall/uninstall checks passed during version 1.0.0 validation, including retention of wallpaper settings, caches and a synthetic account-file fixture.
 - Passing these checks does not mean every Scene effect, hardware configuration or long-running workload is supported. Unsupported Scene projects may show a preview or an actionable error; Web/Application projects remain preview-only.
+- The replacement build has not repeated the earlier Windows 10 cold-start or long-duration device checks. To update an existing 1.0.0 installation, download the rebuilt EXE and matching checksum, fully exit Codex, and run the installer again.
 - Codex updates can affect the experimental bridge. Existing customized plugin installations are not automatically migrated.
 
 ## Source Setup

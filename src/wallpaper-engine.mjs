@@ -227,10 +227,11 @@ export function normalizeUserProperties(properties) {
     const value = cloneUserPropertyValue(Object.hasOwn(definition, 'value') ? definition.value : fallback, fallback);
     const property = {
       key: String(key),
-      label: String(definition.text || definition.label || key).slice(0, 160),
+      label: String(definition.text || definition.label || key).slice(0, 8192),
       type,
       value,
     };
+    if (rawType === 'text') property.displayOnly = true;
     if (type === 'slider') {
       property.min = finiteNumber(definition.min, 0);
       property.max = finiteNumber(definition.max, 1);

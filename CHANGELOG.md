@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.0.0 - Replacement Build (2026-10-15)
+
+- Retain the existing version and release URL; rebuild the installer and checksum
+  with the preview-service and author-settings fixes.
+- Pin sidebar ownership to the launcher service so temporary chat bridges cannot
+  replace its preview URLs. Validate local-thumbnail fallback against the retained
+  renderer instance and synchronize that identity after document restoration.
+- Keep complete bounded author labels before HTML parsing; do not expose generated
+  property keys when a label contains only images.
+- Separate informational text from editable text inputs. Fold author notes,
+  credits and safe links into Author Notes, omit decorative images, and use
+  compact color swatches while preserving parameter values.
+
+All 140 automated regressions and source/packaged desktop and narrow-screen
+browser checks passed. The earlier maintainer-confirmed Windows 10 result below
+applies to the original release workflow; cold startup and long-duration use of
+this replacement build have not been re-tested on that computer.
+Save work and fully exit Codex before reinstalling, including for this
+same-version replacement.
+
 ## 1.0.0 - Official Release (2026-10-13)
 
 > Tested successfully by the project maintainer on another Windows 10 computer.

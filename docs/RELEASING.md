@@ -13,6 +13,20 @@ The directory-local uninstaller is `unins000.exe`; use it rather than deleting
 the program directory manually. Uninstall retains settings, caches and account
 files.
 
+## Authorized Replacement
+
+On 2026-10-15 the maintainer approved replacing the existing `v1.0.0` with the
+preview-service and author-settings repairs. Keep version `1.0.0`, retain the
+release URL, and explicitly date the rebuild in its bilingual notes.
+Preserve the previous commit, tag target, installer, checksum and release
+metadata locally before replacement. Push only reviewed changes based on the
+remote history; never overwrite unrelated development work.
+Stage and verify replacement assets before changing the public download names.
+Move the tag to the new commit with an exact old-ref lease, update the release's
+target and notes, then verify the public downloads against the local SHA-256.
+Do not claim this rebuild repeated the original Windows 10 or complete installer
+lifecycle acceptance. Do not restart an active Codex session for publication.
+
 ## Source Checks
 
 1. Run `npm run verify` on Windows with Node.js 22 or newer. CI uses 24.14.0.

@@ -260,18 +260,20 @@ class CdpClient {
   }
 }
 
-export function makeSidebarUpgradeScript(controllerId = null) {
+export function makeSidebarUpgradeScript(controllerId = null, pinSidebar = false) {
   return `(() => {
-    if (!document.createElement('template').content) return { upgraded: false };
     const runtime = window.__codexWallpaperRuntime;
     const owner = ${JSON.stringify(controllerId)};
     if (owner && runtime?.config.controllerId === owner && runtime.controllers.includes(owner)) {
-      const session = window.__codexWallpaperSidebarSession;
+      const session = ${Boolean(pinSidebar)}
+        ? (window.__codexWallpaperSidebarSession = { controllerId: owner, runtime })
+        : window.__codexWallpaperSidebarSession;
       if (session?.controllerId === owner) session.runtime = runtime;
       const pinned = session?.runtime === runtime && runtime.controllers.includes(session.controllerId);
       runtime.sidebarOwner = pinned ? session.controllerId : owner;
       window.__codexWallpaperSidebarOwner = runtime.sidebarOwner;
     }
+    if (!document.createElement('template').content) return { upgraded: false };
     if (!window.__codexWallpaperLucide) {
       const previousIcons = globalThis.lucide;
       ${SIDEBAR_ASSETS.icons}
@@ -295,7 +297,7 @@ export function makeSidebarUpgradeScript(controllerId = null) {
   })()`;
 }
 
-export function makeInjectionScript({ mediaUrl, mediaFrames = [], frameDelayMs = 250, mode, sceneRendererUrl = null, scenePageUrl = null, sceneSourceUrl = null, sceneProjectUrl = null, panelOpacity = 0.2, scrimOpacity = 0.1, blurPx = 3, muted = true, volume = 0.3, fitMode = 'contain', zoom = 100, positionX = 50, positionY = 50, showControls = true, sourceOptions = [], currentId = null, userProperties = [], userPropertyValues = {}, rotation = {}, mouseEnabled = false, controllerId = null, instanceId = null, reuseExisting = false, selectionRequestId = null }) {
+export function makeInjectionScript({ mediaUrl, mediaFrames = [], frameDelayMs = 250, mode, sceneRendererUrl = null, scenePageUrl = null, sceneSourceUrl = null, sceneProjectUrl = null, panelOpacity = 0.2, scrimOpacity = 0.1, blurPx = 3, muted = true, volume = 0.3, fitMode = 'contain', zoom = 100, positionX = 50, positionY = 50, showControls = true, sourceOptions = [], currentId = null, userProperties = [], userPropertyValues = {}, rotation = {}, mouseEnabled = false, controllerId = null, instanceId = null, reuseExisting = false, selectionRequestId = null, pinSidebar = false }) {
   volume = Number.isFinite(volume) ? Math.max(0, Math.min(1, volume)) : 0.3;
   rotation = normalizeRotation(rotation, sourceOptions);
   const config = JSON.stringify({ mediaUrl, mediaFrames, frameDelayMs, mode, sceneRendererUrl, scenePageUrl, sceneSourceUrl, sceneProjectUrl, panelOpacity, scrimOpacity, blurPx, muted, volume, fitMode, zoom, positionX, positionY, showControls, sourceOptions, currentId, userProperties, userPropertyValues, rotation, mouseEnabled: mouseEnabled === true, controllerId, instanceId });
@@ -319,7 +321,7 @@ export function makeInjectionScript({ mediaUrl, mediaFrames = [], frameDelayMs =
         && existing.layer === document.getElementById(id)
         && existing.getMedia().isConnected && !existing.getMedia().error && !existing.failed) {
       const sidebarSession = window.__codexWallpaperSidebarSession;
-      existing.config.controllerId = sidebarSession?.runtime === existing
+      existing.config.controllerId = !${Boolean(pinSidebar)} && sidebarSession?.runtime === existing
         && existing.controllers.includes(sidebarSession.controllerId)
         ? sidebarSession.controllerId : cfg.controllerId;
       existing.controllers = controllers;
@@ -342,7 +344,7 @@ export function makeInjectionScript({ mediaUrl, mediaFrames = [], frameDelayMs =
         if (grid) grid.scrollTop = scrollTop;
       }
       window.__codexWallpaperSyncPlayback?.();
-      ${makeSidebarUpgradeScript(controllerId)};
+      ${makeSidebarUpgradeScript(controllerId, pinSidebar)};
       return { ...existing.snapshot(), reused: true };
     }
     window.__codexWallpaperFeaturesCleanup?.();
@@ -1001,7 +1003,7 @@ export function makeInjectionScript({ mediaUrl, mediaFrames = [], frameDelayMs =
     else if (cfg.mode === 'preview') media.addEventListener('load', revealNew, { once: true });
     if (media.complete || media.readyState >= 2) revealNew();
     syncPlayback();
-    ${makeSidebarUpgradeScript(controllerId)};
+    ${makeSidebarUpgradeScript(controllerId, pinSidebar)};
     return { ...snapshot(), reused: false };
   })()`;
 }
@@ -1252,6 +1254,7 @@ export class CodexSkinBridge {
     });
     if (evaluated.exceptionDetails) throw new Error(evaluated.exceptionDetails.text);
     const state = evaluated.result?.value;
+    if (typeof state?.instanceId === 'string') client.skinInstanceId = state.instanceId;
     if (this.active.mode === 'picker') {
       const persisted = readSavedSkinState(this.stateFile);
       if (persisted) await this.apply(persisted, { reuseExisting: true });
@@ -1356,7 +1359,8 @@ export class CodexSkinBridge {
 
   async replyThumbnail(command, client) {
     const active = this.active;
-    if (!active || !client || command.instanceId !== active.instanceId
+    const instanceId = client?.skinInstanceId ?? active?.instanceId;
+    if (!active || !client || command.instanceId !== instanceId
         || typeof command.requestId !== 'string' || !command.requestId || command.requestId.length > 160) return;
     const source = active.sourceOptions?.find(item => item.id === command.id && item.thumbnailUrl === command.url);
     if (!source?.thumbnailUrl) return;
@@ -1372,7 +1376,7 @@ export class CodexSkinBridge {
         if (location.href !== 'app://-/index.html' || window !== window.top) return false;
         const runtime = window.__codexWallpaperRuntime;
         if (runtime?.config.controllerId !== ${JSON.stringify(this.controllerId)}
-            || runtime.config.instanceId !== ${JSON.stringify(active.instanceId)}
+            || runtime.config.instanceId !== ${JSON.stringify(instanceId)}
             || !runtime.config.sourceOptions.some(item => item.id === ${JSON.stringify(source.id)}
               && item.thumbnailUrl === ${JSON.stringify(source.thumbnailUrl)})) return false;
         runtime.sidebar?.resolveThumbnail?.(${JSON.stringify(result)});
@@ -1474,7 +1478,7 @@ export class CodexSkinBridge {
   async injectCurrent({ onlyNew = false, reuseExisting = onlyNew, selectionRequestId = null } = {}) {
     const { targetCount, added } = await this.ensureClients();
     if (!targetCount) throw new Error('No Codex renderer targets were found on the debug port.');
-    const config = { ...this.active, controllerId: this.controllerId };
+    const config = { ...this.active, controllerId: this.controllerId, pinSidebar: this.pinSidebar === true };
     const source = makeInjectionScript({ ...config, reuseExisting: true });
     const restoreSource = `(() => {
       if (window !== window.top || location.href !== 'app://-/index.html') return;

@@ -63,7 +63,7 @@ export function installSkinSidebar({ cfg, controls, toggle, panel, assets, statu
   const frame = document.createElement('template');
   frame.innerHTML = assets?.html || '';
   panel.append(...frame.content.childNodes);
-  controls.sidebarVersion = 7;
+  controls.sidebarVersion = 8;
   const root = panel.querySelector('.skin-sidebar');
   const one = selector => root.querySelector(selector);
   const many = selector => [...root.querySelectorAll(selector)];
@@ -269,11 +269,53 @@ export function installSkinSidebar({ cfg, controls, toggle, panel, assets, statu
   move(statusNode, one('[data-slot="status"]'));
   move(progressNode, one('[data-slot="progress"]'));
   move(diagnosticsNode, one('[data-slot="diagnostics"]'));
-  for (const node of authorControls) move(node, one('[data-slot="author-controls"]'));
-  one('[data-author-section]').hidden = authorControls.length === 0;
+  const authorSlot = one('[data-slot="author-controls"]');
+  const authorInfo = one('[data-author-info]');
+  const authorNotes = one('[data-author-notes]');
+  let editableCount = 0;
   for (const row of authorControls) {
-    row.classList.add('skin-sidebar__author-row');
     const input = row.querySelector('[data-user-property]');
+    const property = cfg.userProperties?.find(item => item.key === input?.dataset.userProperty);
+    const markup = document.createElement('template');
+    markup.innerHTML = property?.label || row.firstElementChild?.textContent || '';
+    for (const node of markup.content.querySelectorAll('script,style,iframe,object,embed')) node.remove();
+    for (const br of markup.content.querySelectorAll('br')) br.replaceWith(document.createTextNode('\n'));
+    const text = markup.content.textContent.trim();
+    const credit = property?.type === 'bool'
+      && /^(?:\u52a8\u6001\u5236\u4f5c|\u58c1\u7eb8\u4f5c\u8005|\u4f5c\u8005)\s*[:\uff1a]|^(?:made|created) by\b/i.test(text);
+    const information = property?.displayOnly || credit || markup.content.querySelector('a,img');
+    if (!text || information) {
+      row.remove();
+      if (text) {
+        const note = document.createElement('div');
+        note.className = 'skin-sidebar__author-note';
+        const copyText = (source, target) => {
+          for (const node of source.childNodes) {
+            if (node.nodeType === 3) target.appendChild(document.createTextNode(node.textContent));
+            else if (node.tagName === 'A') {
+              const url = safe(() => new URL(node.getAttribute('href')), null);
+              if (url && ['http:', 'https:'].includes(url.protocol)) {
+                const link = document.createElement('a');
+                link.href = url.href;
+                link.target = '_blank';
+                link.rel = 'noopener noreferrer';
+                copyText(node, link);
+                target.appendChild(link);
+              } else copyText(node, target);
+            } else copyText(node, target);
+          }
+        };
+        copyText(markup.content, note);
+        authorNotes.appendChild(note);
+      }
+      continue;
+    }
+    editableCount++;
+    move(row, authorSlot);
+    row.classList.add('skin-sidebar__author-row');
+    row.firstElementChild.textContent = text;
+    row.firstElementChild.title = text;
+    input.setAttribute('aria-label', text);
     row.dataset.type = input?.type || input?.tagName?.toLowerCase();
     if (input?.type === 'checkbox') input.setAttribute('role', 'switch');
     if (input?.dataset.userProperty === 'schemecolor'
@@ -283,6 +325,8 @@ export function installSkinSidebar({ cfg, controls, toggle, panel, assets, statu
       input.setAttribute('aria-label', '配色');
     }
   }
+  authorInfo.hidden = authorNotes.childElementCount === 0;
+  one('[data-author-section]').hidden = editableCount === 0 && authorInfo.hidden;
   const applyUi = () => {
     root.dataset.material = ui.material;
     root.dataset.theme = ui.theme === 'system'

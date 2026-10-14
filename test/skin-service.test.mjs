@@ -12,7 +12,7 @@ test('launcher bridge opens first-use picker without MCP and disconnects when Co
   let running = true;
   const bridge = {
     stateFile: join(mkdtempSync(join(tmpdir(), 'skin-service-')), 'state.json'),
-    async showPicker() { calls.push('picker'); },
+    async showPicker() { assert.equal(this.pinSidebar, true); calls.push('picker'); },
     async disconnect() { calls.push('disconnect'); },
   };
   await runSkinService({ bridge, isRunning: () => running, onReady: () => calls.push('ready'), wait: async () => { running = false; } });
@@ -27,7 +27,11 @@ test('launcher bridge restores saved selection and follows peer selection/remova
   let tick = 0;
   const bridge = {
     stateFile, saved: { id: 'one' }, active: { currentId: 'one' },
-    async apply(saved, options) { calls.push([saved.id, options.reuseExisting]); this.active = { currentId: saved.id }; },
+    async apply(saved, options) {
+      assert.equal(this.pinSidebar, true);
+      calls.push([saved.id, options.reuseExisting]);
+      this.active = { currentId: saved.id };
+    },
     async remove() { calls.push('remove'); this.active = this.saved = null; },
     async disconnect() { calls.push('disconnect'); },
   };
